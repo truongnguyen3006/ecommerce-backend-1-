@@ -227,3 +227,9 @@ Authorization: Bearer <access_token>
 - Mục tiêu chính là kiểm thử tải và oversell, không phải hoàn thiện toàn bộ nghiệp vụ ecommerce
 - Payment hiện là luồng mô phỏng/tích hợp VNPay nếu không test benchmark
 - Dự án phù hợp cho chạy local và benchmark hơn là triển khai production ngay
+
+## Tác giả
+
+- **Tên:** Nguyễn Lâm Trường
+- **Email:** lamtruongnguyen2004@gmail.com
+- **GitHub:** [https://github.com/truongnguyen3006](https://github.com/truongnguyen3006)
