@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: 'Microservices Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      # Grafana sẽ quét toàn bộ file JSON trong thư mục này
+      path: /var/lib/grafana/dashboards
