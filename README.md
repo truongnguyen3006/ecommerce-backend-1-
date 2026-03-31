@@ -96,7 +96,7 @@ Nếu không kiểm thử luồng thanh toán, có thể bỏ qua phần cấu h
 ### 1. Clone project
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/truongnguyen3006/ecommerce-backend-1-.git
 cd <project-folder>
 ```
 
