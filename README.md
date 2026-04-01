@@ -59,6 +59,14 @@ Khi nhiều request đặt hàng đến cùng lúc cho một SKU:
 - service nào trở thành nút thắt khi tải tăng cao
 - backend phản ứng thế nào khi flow phải đi qua nhiều service và nhiều bước bất đồng bộ
 
+## Yêu cầu môi trường
+
+- JDK 24
+- Maven 3.9+
+- Docker và Docker Compose
+
+> Lưu ý: một số giá trị trong `.env.example` chỉ mang tính minh họa. Khi chạy local nên ưu tiên giá trị đang được dùng thực tế trong `application.properties` và `docker-compose.yml`.
+
 ## Biến môi trường
 
 Project sử dụng một số biến môi trường để cấu hình database, Redis, Kafka, Keycloak và các service nội bộ.
