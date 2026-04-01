@@ -131,7 +131,7 @@ mvn spring-boot:run
 
 ## Kiểm thử tải với JMeter
 
-Repo có 2 kịch bản JMeter để kiểm thử luồng đặt hàng đồng thời:
+Repo có 2 kịch bản [Jmeter Script](./Jmeter%20Script/) để kiểm thử luồng đặt hàng đồng thời:
 
 - `oversell-single-sku.jmx`: nhiều request cùng đặt mua một SKU
 - `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt mua nhiều SKU khác nhau
