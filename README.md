@@ -101,6 +101,17 @@ Nếu không kiểm thử luồng thanh toán, có thể bỏ qua phần cấu h
 
 ## Cách chạy local
 
+## Dữ liệu và thành phần đã có sẵn trong repo
+
+Repo local này đã chuẩn bị sẵn một phần dữ liệu/hạ tầng để demo:
+
+- `docker-compose.yml`: dựng MySQL, Redis, Kafka, Schema Registry, Keycloak, Prometheus, Grafana, Zipkin
+- `mysql-init/init.sql`: khởi tạo database business ban đầu
+- `keycloak-data/realm-export.json`: import realm cho Keycloak
+- `product-service`: có logic seed dữ liệu phục vụ demo inventory / benchmark
+
+Điều này giúp người clone có thể tái hiện môi trường local dễ hơn, nhưng vẫn nên đọc kỹ phần cấu hình trước khi chạy.
+
 ### 1. Clone project
 
 ```bash
