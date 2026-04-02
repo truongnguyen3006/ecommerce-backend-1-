@@ -150,42 +150,73 @@ mvn spring-boot:run
 
 ## Kiểm thử tải với JMeter
 
-Repo có 2 kịch bản [Jmeter Script](./Jmeter%20Script/) để kiểm thử luồng đặt hàng đồng thời:
+Repo cung cấp 2 kịch bản trong thư mục [Jmeter Script](./Jmeter%20Script/) để kiểm thử luồng đặt hàng đồng thời:
 
-- `oversell-single-sku.jmx`: nhiều request cùng đặt mua một SKU
-- `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt mua nhiều SKU khác nhau
+- `oversell-single-sku.jmx`: nhiều request cùng đặt mua một SKU để kiểm tra khả năng chặn oversell
+- `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt mua nhiều SKU khác nhau để kiểm tra tải phân tán trên nhiều biến thể sản phẩm
 
-Hai file CSV đi kèm:
+Các file dữ liệu đi kèm:
 
 - `data_oversell.csv`: chứa một `skuCode` dùng chung cho toàn bộ request
-- `data_multi.csv`: chứa danh sách nhiều `skuCode` để phân tán tải trên nhiều biến thể sản phẩm
+- `data_multi.csv`: chứa danh sách nhiều `skuCode` để phân tán tải trên nhiều sản phẩm
 
-### Cách setup kịch bản
+### Chuẩn bị trước khi chạy
 
-1. Mở file `.jmx` bằng JMeter.
-2. Sửa lại địa chỉ host và port của các HTTP Request theo môi trường đang chạy.
-3. Sửa `CSV Data Set Config` để trỏ tới file CSV trong máy của bạn.
-4. Thay `Authorization: Bearer ...` bằng access token mới.
-5. Kiểm tra lại dữ liệu test như user, SKU, tồn kho và trạng thái dịch vụ trước khi chạy.
+Trước khi chạy kịch bản, cần bảo đảm:
 
-### Lưu ý khi benchmark
+- backend API đang chạy và truy cập được
+- các service liên quan đến luồng đặt hàng đã sẵn sàng
+- dữ liệu test hợp lệ, gồm user, SKU, tồn kho và trạng thái dịch vụ
+- đã có access token hợp lệ cho các request cần xác thực
 
-Khi chạy JMeter, nên gửi request trực tiếp tới IP của môi trường chạy backend thay vì `localhost`, để hạn chế ảnh hưởng từ lớp proxy/NAT của Docker Desktop.
+### Cấu hình kịch bản trong JMeter
 
-Ví dụ:
-- dùng IP của WSL2 nếu backend chạy trong WSL2
-- hoặc dùng IP LAN / DNS nội bộ của máy chạy backend
-- tránh trộn `localhost` và IP khác nhau trong cùng một file test
+Mở một trong hai file `.jmx` bằng JMeter, sau đó kiểm tra và cập nhật lại các thành phần sau:
 
-### Tìm IP WSL2 để chạy JMeter
+#### 1. Cấu hình địa chỉ API
 
-Nếu backend hoặc hạ tầng đang chạy trong WSL2, có thể lấy IP của WSL2 bằng lệnh trong terminal:
+Trong các `HTTP Request`, cập nhật lại:
 
-```bash
-wsl ip -4 addr show eth0
+- `Server Name or IP`
+- `Port Number`
+
+Theo địa chỉ backend đang sử dụng.
+
+Nên dùng thống nhất một địa chỉ trong toàn bộ file test để tránh sai lệch kết quả khi benchmark.
+
+#### 2. Cấu hình file dữ liệu CSV
+
+Trong `CSV Data Set Config`, trỏ đúng tới file dữ liệu tương ứng trong thư mục `Jmeter Script`:
+
+- `data_oversell.csv`
+- `data_multi.csv`
+
+Nếu JMeter đang giữ đường dẫn tuyệt đối cũ, cần sửa lại cho đúng vị trí hiện tại của file.
+
+#### 3. Cập nhật access token
+
+Trong `HTTP Header Manager`, thay giá trị:
+
+```text
+Authorization: Bearer <access_token>
 ```
 
-### Chuẩn bị access token cho JMeter
+bằng token mới.
+
+Lưu ý: token có thời hạn. Khi hết hạn, cần đăng nhập lại để lấy token mới rồi cập nhật lại trong JMeter.
+
+#### 4. Kiểm tra biến và tham số trong kịch bản
+
+Trước khi chạy, nên kiểm tra lại các biến được sử dụng trong request, đặc biệt là:
+
+- `skuCode` lấy từ file CSV
+- các giá trị trong request body
+- header xác thực
+- các biến dùng để phân biệt từng lần chạy nếu kịch bản có dùng tiền tố như `RUN_PREFIX`
+
+Nếu thay đổi số lượng request đồng thời, cần kiểm tra thêm các thành phần đồng bộ như `Synchronizing Timer` để giá trị khớp với số thread thực tế.
+
+### Cách lấy access token
 
 Hệ thống sử dụng JWT access token cho các request cần xác thực trong JMeter.
 
@@ -201,17 +232,13 @@ Hệ thống sử dụng JWT access token cho các request cần xác thực tro
 - Username: `admin`
 - Password: `admin123`
 
-> Đây là tài khoản admin ở phía ứng dụng, có thể dùng để đăng nhập qua API, frontend, Postman, và phục vụ các kịch bản test cần quyền quản trị.
+> Đây là tài khoản admin phía ứng dụng, có thể dùng để đăng nhập qua API, frontend hoặc Postman.
 
 **3. Tài khoản người dùng thông thường**
-- Realm import của Keycloak có thể đã bao gồm sẵn một số tài khoản người dùng để test local.
-- Nếu cần, bạn cũng có thể tự đăng ký thêm tài khoản mới qua frontend hoặc API.
-
----
+- Realm import của Keycloak có thể đã bao gồm sẵn một số tài khoản test.
+- Có thể tự đăng ký thêm tài khoản mới qua frontend hoặc API nếu cần.
 
 #### Cách 1: Lấy token bằng `curl`
-
-Gửi request đăng nhập tới API:
 
 ```bash
 curl -X POST http://localhost:8000/auth/login \
@@ -224,14 +251,14 @@ curl -X POST http://localhost:8000/auth/login \
 
 #### Cách 2: Lấy token bằng Postman
 
-Mở **Postman** hoặc collection API của project, tạo request với thông tin sau:
+Tạo request:
 
 ```http
 POST http://localhost:8000/auth/login
 Content-Type: application/json
 ```
 
-Chọn **Body → raw → JSON**, rồi nhập nội dung:
+Body:
 
 ```json
 {
@@ -240,16 +267,33 @@ Chọn **Body → raw → JSON**, rồi nhập nội dung:
 }
 ```
 
-Sau khi đăng nhập thành công, copy giá trị `access_token` từ response, rồi mở file `.jmx` và thay giá trị trong header thành:
+Sau khi đăng nhập thành công, copy giá trị `access_token` từ response và thay vào `HTTP Header Manager` trong file `.jmx`.
+Nếu token hết hạn có thể login lại để lấy.
 
-```text
-Authorization: Bearer <access_token>
+### Lưu ý khi benchmark
+
+Để kết quả ổn định hơn, nên gửi request trực tiếp tới địa chỉ chạy backend thay vì đi qua lớp trung gian không cần thiết.
+
+Nếu hệ thống chạy trong WSL2, có thể lấy IP bằng lệnh:
+
+```bash
+wsl ip -4 addr show eth0
 ```
 
-Nếu token hết hạn, chỉ cần đăng nhập lại để lấy token mới rồi cập nhật lại vào JMeter.
+Tránh trộn nhiều kiểu địa chỉ khác nhau trong cùng một file test, ví dụ vừa dùng `localhost` vừa dùng IP khác, vì dễ gây sai lệch khi đo tải.
 
-## Kết quả kiểm thử tải
+### Gợi ý kiểm tra nhanh trước khi bấm chạy
 
+Nên rà lại các điểm sau:
+
+- backend trả response bình thường với request đặt hàng
+- SKU trong file CSV tồn tại thật trong hệ thống
+- tồn kho đủ hoặc đúng theo mục tiêu kiểm thử
+- token còn hiệu lực
+- toàn bộ `HTTP Request` đang trỏ đúng host và port
+- `CSV Data Set Config` đang đọc đúng file dữ liệu
+
+## Kết quả kiểm thử tải sau khi mở rộng lên 2 instance API Gateway
 ### Kịch bản 1: Oversell trên một SKU
 
 #### JMeter Test Plan
