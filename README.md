@@ -187,15 +187,66 @@ ip -4 addr show eth0
 
 ### Chuẩn bị access token cho JMeter
 
-#### Lấy token từ Postman
+Hệ thống sử dụng JWT access token cho các request cần xác thực trong JMeter.
 
-1. Đăng nhập bằng tài khoản test qua API hoặc collection Postman của project.
-2. Sau khi đăng nhập thành công, copy `access_token` từ response.
-3. Mở file `.jmx` và thay giá trị trong header:
+#### Tài khoản dùng để test
+
+**1. Keycloak Admin Console**
+- Username: `admin`
+- Password: `admin`
+
+> Đây là tài khoản dùng để đăng nhập vào **Keycloak Admin Console**, không phải tài khoản người dùng thông thường của ứng dụng.
+
+**2. Tài khoản admin của ứng dụng**
+- Username: `admin`
+- Password: `admin123`
+
+> Đây là tài khoản admin ở phía ứng dụng, có thể dùng để đăng nhập qua API, frontend, Postman, và phục vụ các kịch bản test cần quyền quản trị.
+
+**3. Tài khoản người dùng thông thường**
+- Realm import của Keycloak có thể đã bao gồm sẵn một số tài khoản người dùng để test local.
+- Nếu cần, bạn cũng có thể tự đăng ký thêm tài khoản mới qua frontend hoặc API.
+
+---
+
+#### Cách 1: Lấy token bằng `curl`
+
+Gửi request đăng nhập tới API:
+
+```bash
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "admin123"
+  }'
+```
+
+#### Cách 2: Lấy token bằng Postman
+
+Mở **Postman** hoặc collection API của project, tạo request với thông tin sau:
+
+```http
+POST http://localhost:8000/auth/login
+Content-Type: application/json
+```
+
+Chọn **Body → raw → JSON**, rồi nhập nội dung:
+
+```json
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+Sau khi đăng nhập thành công, copy giá trị `access_token` từ response, rồi mở file `.jmx` và thay giá trị trong header thành:
 
 ```text
 Authorization: Bearer <access_token>
 ```
+
+Nếu token hết hạn, chỉ cần đăng nhập lại để lấy token mới rồi cập nhật lại vào JMeter.
 
 ## Kết quả kiểm thử tải
 
