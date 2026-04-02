@@ -65,17 +65,18 @@ Khi nhiều request đặt hàng đến cùng lúc cho một SKU:
 - Maven 3.9+
 - Docker và Docker Compose
 
-> Lưu ý: một số giá trị trong `.env.example` chỉ mang tính minh họa. Khi chạy local nên ưu tiên giá trị đang được dùng thực tế trong `application.properties` và `docker-compose.yml`.
+## Cấu hình mặc định
 
-## Biến môi trường
+Project đã được khai báo sẵn cấu hình chạy local trong file `application.properties`, vì vậy sau khi tải source code về, bạn có thể chạy project ngay mà không cần tạo thêm file `.env` hoặc khai báo thêm biến môi trường cho Spring Boot.
 
-Project sử dụng một số biến môi trường để cấu hình database, Redis, Kafka, Keycloak và các service nội bộ.
+Tuy nhiên, để ứng dụng khởi động thành công, các dịch vụ phụ trợ như database, Redis, Kafka, Keycloak và các service liên quan phải đang chạy đúng với địa chỉ và cổng đã được cấu hình sẵn trong project.
 
-Tạo file `.env` từ file mẫu:
+Nếu muốn thay đổi môi trường chạy, bạn có thể chỉnh trực tiếp các giá trị trong:
 
-```bash
-cp .env.example .env
-```
+- `src/main/resources/application.properties`
+- `docker-compose.yml` (nếu có sử dụng Docker Compose)
+
+> Lưu ý: file `.env.example` chỉ mang tính minh họa cho các thông số cấu hình thường dùng. Trong project này, Spring Boot sử dụng các giá trị đã được khai báo sẵn trong `application.properties`. Khi chạy local, có thể dùng trực tiếp các giá trị mặc định đó. Nếu muốn thay đổi môi trường chạy, hãy cập nhật các thông số tương ứng trong file cấu hình của ứng dụng.
 
 ### Các biến chính
 
