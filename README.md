@@ -179,10 +179,10 @@ Ví dụ:
 
 ### Tìm IP WSL2 để chạy JMeter
 
-Nếu backend hoặc hạ tầng đang chạy trong WSL2, có thể lấy IP của WSL2 bằng lệnh:
+Nếu backend hoặc hạ tầng đang chạy trong WSL2, có thể lấy IP của WSL2 bằng lệnh trong terminal:
 
 ```bash
-ip -4 addr show eth0
+wsl ip -4 addr show eth0
 ```
 
 ### Chuẩn bị access token cho JMeter
