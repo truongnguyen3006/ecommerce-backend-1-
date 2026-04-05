@@ -303,13 +303,13 @@ Nên rà lại các điểm sau:
 #### JMeter Summary Report
 <img src="screenshots/Oversell_1500.png" alt="Admin" width="1504">
 
-#### Grafana dashboard Oversell success result: 100 yêu cầu thành công cộng với 1000 yêu cầu thành công từ test 2
+#### Grafana dashboard Oversell success result: 100 yêu cầu thành công cộng với 1000 yêu cầu thành công từ kịch bản 2
 <img src="screenshots/result_oversell_1500_success.png" alt="Admin" width="746">
 
 #### Grafana dashboard Oversell fail result
 <img src="screenshots/result_oversell_1500_fail.png" alt="Admin" width="773">
 
-#### Kết quả tồn kho sau test
+#### Kết quả tồn kho sau test của sku NIK1-WHITE-38
 <img src="screenshots/UI_oversell_1500.png" alt="Admin" width="1876">
 
 ### Kịch bản 2: Tải đồng thời trên nhiều SKU
