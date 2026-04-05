@@ -306,7 +306,7 @@ Nên rà lại các điểm sau:
 #### Grafana dashboard Oversell success result: 100 yêu cầu thành công cộng với 1000 yêu cầu thành công từ kịch bản 2
 <img src="screenshots/result_oversell_1500_success.png" alt="Admin" width="746">
 
-#### Grafana dashboard Oversell fail result
+#### Grafana dashboard Oversell fail result: những yêu cầu còn lại thất bại do số lượng đã hết
 <img src="screenshots/result_oversell_1500_fail.png" alt="Admin" width="773">
 
 #### Kết quả tồn kho sau test của sku NIK1-GREEN-39
