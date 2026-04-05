@@ -295,7 +295,7 @@ Nên rà lại các điểm sau:
 - `CSV Data Set Config` đang đọc đúng file dữ liệu
 
 ## Kết quả kiểm thử tải sau khi mở rộng lên 2 instance API Gateway
-### Kịch bản 1: Oversell trên một SKU
+### Kịch bản 1: Oversell trên một SKU: test trên sku NIK1-WHITE-38, số lượng ban đầu là 100
 
 #### JMeter Test Plan
 <img src="screenshots/testplan_oversell.png" alt="Admin" width="1507">
@@ -303,7 +303,7 @@ Nên rà lại các điểm sau:
 #### JMeter Summary Report
 <img src="screenshots/Oversell_1500.png" alt="Admin" width="1504">
 
-#### Grafana dashboard Oversell success result
+#### Grafana dashboard Oversell success result: 100 yêu cầu thành công cộng với 1000 yêu cầu thành công từ test 2
 <img src="screenshots/result_oversell_1500_success.png" alt="Admin" width="746">
 
 #### Grafana dashboard Oversell fail result
