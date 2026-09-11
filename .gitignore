@@ -49,3 +49,8 @@ mysql_keycloak_data/
 *.log
 
 product-service/src/main/resources/application-local.properties
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
