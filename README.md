@@ -1,31 +1,54 @@
-# Ecommerce Backend
+# High-Concurrency Ecommerce Microservices Backend
 
-Backend microservices cho bài test tải theo kịch bản **oversell**. Trọng tâm của project là kiểm tra khả năng xử lý khi nhiều người cùng đặt một SKU trong cùng thời điểm, thay vì phát triển một hệ thống ecommerce đầy đủ tính năng.
+Backend microservices được xây dựng để kiểm thử **concurrent checkout**, **inventory consistency** và nguy cơ **overselling** khi nhiều người dùng cùng đặt hàng trong một khoảng thời gian ngắn.
+
+Trọng tâm của project không phải là hoàn thiện toàn bộ nghiệp vụ ecommerce cho production, mà là xây dựng một hệ thống đủ thực tế để thử nghiệm cách các microservice, cache, database, Kafka và API Gateway phối hợp dưới tải đồng thời.
+
+## Kết quả nổi bật
+
+| Kịch bản | Tải kiểm thử | Mục tiêu | Kết quả chính |
+|---|---:|---|---|
+| Single-SKU oversell | 1,500 virtual users | Nhiều request cùng tranh mua SKU `NIK1-GREEN-39`, tồn kho ban đầu 100 | 100 đơn hoàn tất, tồn kho cuối = 0; các đơn còn lại bị từ chối khi hết tồn kho |
+| Multi-SKU concurrent checkout | 1,000 checkout requests | Phân tán tải trên nhiều SKU | 0% JMeter error, throughput khoảng 318.5 req/s trong lần benchmark được lưu |
+
+> Các số liệu trên được lấy từ các screenshot benchmark đã lưu trong repo. File `.jmx` là test plan có thể cấu hình lại số thread; khi thay đổi thread count cần cập nhật `Synchronizing Timer` tương ứng.
 
 ## Mục tiêu chính
 
-- Mô phỏng luồng đặt hàng trong môi trường nhiều request đồng thời
-- Kiểm tra nguy cơ oversell khi nhiều người tranh mua cùng một SKU
-- Đánh giá cách hệ thống phối hợp giữa gateway, service business, cache, database và event bus
-- Theo dõi trạng thái đơn hàng trong flow bất đồng bộ
+- Mô phỏng luồng đặt hàng trong môi trường có nhiều request đồng thời.
+- Kiểm tra khả năng ngăn oversell khi nhiều người cùng tranh mua một SKU có tồn kho giới hạn.
+- Giữ trạng thái tồn kho nhất quán trong flow bất đồng bộ.
+- Đánh giá cách gateway, business services, Redis, MySQL và Kafka phối hợp dưới tải cao.
+- Theo dõi trạng thái đơn hàng và hành vi của hệ thống qua Prometheus, Grafana và Zipkin.
 
 ## Kiến trúc chính
 
-Project được tách thành nhiều service:
+Project được tách thành các service sau:
 
-- `api-gateway`: điểm vào chung cho frontend
-- `discovery-server`: service discovery
-- `user-service`: đăng ký, đăng nhập, thông tin người dùng
-- `product-service`: quản lý sản phẩm
-- `inventory-service`: quản lý tồn kho
-- `cart-service`: giỏ hàng
-- `order-service`: tạo đơn và điều phối luồng đặt hàng
-- `payment-service`: xử lý payment mock
-- `notification-service`: đẩy trạng thái đơn hàng realtime
+- `api-gateway`: điểm vào chung của hệ thống.
+- `discovery-server`: service discovery bằng Eureka.
+- `user-service`: đăng ký, đăng nhập và thông tin người dùng.
+- `product-service`: quản lý sản phẩm, cache và upload ảnh sản phẩm.
+- `inventory-service`: quản lý tồn kho và xử lý kiểm tra tồn kho bằng Kafka Streams.
+- `cart-service`: quản lý giỏ hàng.
+- `order-service`: tạo đơn và điều phối luồng đặt hàng.
+- `payment-service`: xử lý payment workflow, hỗ trợ tích hợp VNPay Sandbox; benchmark có thể sử dụng luồng thanh toán mô phỏng/đơn giản hóa.
+- `notification-service`: cập nhật trạng thái đơn hàng theo flow bất đồng bộ.
+
+Trong benchmark mở rộng, Nginx phân phối request theo `least_conn` tới **2 API Gateway instances** chạy tại `8080` và `8090`, với Nginx expose ra cổng `8000`.
+
+## Một số quyết định kỹ thuật chính
+
+- Kafka Streams xử lý inventory theo key `skuCode` để các event của cùng một SKU được xử lý theo cùng key.
+- Inventory sử dụng persistent state store để duy trì trạng thái tồn kho phục vụ xử lý stream.
+- Kafka Streams được cấu hình `exactly_once_v2` cho topology inventory.
+- Redis được sử dụng cho cart data, cache và một số workflow state.
+- Nginx sử dụng `least_conn` để cân bằng tải giữa hai API Gateway instances trong bài benchmark.
+- JMeter sử dụng `Synchronizing Timer` để tạo contention khi nhiều virtual users checkout gần như cùng lúc.
 
 ## Hạ tầng local
 
-Repo có sẵn `docker-compose.yml` để chạy các thành phần chính:
+Repo có `docker-compose.yml` để dựng các thành phần hạ tầng chính:
 
 - MySQL
 - Redis
@@ -39,85 +62,83 @@ Repo có sẵn `docker-compose.yml` để chạy các thành phần chính:
 
 ## Công nghệ sử dụng
 
-- Java – ngôn ngữ chính của backend
-- Spring Boot – xây dựng API và các microservice
-- Spring Cloud Gateway – gateway cho hệ thống
-- Eureka – service discovery giữa các service
-- MySQL – cơ sở dữ liệu chính
-- Redis – cache và tăng tốc truy xuất
-- Kafka – xử lý giao tiếp bất đồng bộ
-- Keycloak – xác thực và phân quyền
-- Prometheus / Grafana / Zipkin – giám sát hệ thống và theo dõi request
-- Nginx – reverse proxy và điều hướng truy cập
+- **Java** – ngôn ngữ chính của backend.
+- **Spring Boot** – xây dựng REST API và các microservice.
+- **Spring Cloud Gateway** – API Gateway.
+- **Eureka** – service discovery.
+- **MySQL** – cơ sở dữ liệu quan hệ cho các business service.
+- **Redis** – cart data, cache và hỗ trợ xử lý state.
+- **Kafka** – giao tiếp bất đồng bộ giữa các service.
+- **Kafka Streams** – xử lý inventory stream, keyed processing và state store.
+- **Keycloak / OAuth2 / JWT** – xác thực và phân quyền.
+- **Docker Compose** – dựng hạ tầng local.
+- **Nginx** – reverse proxy và load balancing cho API Gateway.
+- **Prometheus / Grafana / Zipkin** – metrics, monitoring và distributed tracing.
+- **JMeter** – kiểm thử tải và concurrent checkout.
+- **VNPay Sandbox** – tích hợp luồng thanh toán.
+- **Cloudinary** – upload ảnh sản phẩm phía server.
 
-## Bài toán mà repo này tập trung
+## Bài toán mà repo tập trung
 
-Khi nhiều request đặt hàng đến cùng lúc cho một SKU:
+Khi nhiều request đặt hàng đến cùng lúc, project tập trung kiểm tra các câu hỏi sau:
 
-- hệ thống có chặn được bán vượt tồn kho hay không
-- trạng thái đơn hàng có còn nhất quán hay không
-- service nào trở thành nút thắt khi tải tăng cao
-- backend phản ứng thế nào khi flow phải đi qua nhiều service và nhiều bước bất đồng bộ
+- Hệ thống có chặn được bán vượt tồn kho hay không?
+- Tồn kho có giữ được trạng thái hợp lệ khi nhiều request cùng tranh mua một SKU hay không?
+- Luồng order → inventory → payment/notification phản ứng thế nào khi tải tăng cao?
+- Gateway và các business service hoạt động ra sao khi phải xử lý nhiều request gần như đồng thời?
+- Metrics và tracing có cung cấp đủ thông tin để quan sát hệ thống trong quá trình benchmark hay không?
 
 ## Yêu cầu môi trường
 
 - JDK 24
 - Maven 3.9+
 - Docker và Docker Compose
+- Apache JMeter nếu muốn chạy lại load test
 
-## Cấu hình mặc định
+## Cấu hình
 
-Project đã được khai báo sẵn cấu hình chạy local trong file `application.properties`, vì vậy sau khi tải source code về, bạn có thể chạy project ngay mà không cần tạo thêm file `.env` hoặc khai báo thêm biến môi trường cho Spring Boot.
+Phần lớn các service hiện có cấu hình local mặc định trực tiếp trong `application.properties`. Vì vậy khi chạy trên máy local, cần bảo đảm MySQL, Redis, Kafka, Keycloak, Eureka và các service liên quan đang chạy đúng host/port mà project đang cấu hình.
 
-Tuy nhiên, để ứng dụng khởi động thành công, các dịch vụ phụ trợ như database, Redis, Kafka, Keycloak và các service liên quan phải đang chạy đúng với địa chỉ và cổng đã được cấu hình sẵn trong project.
+File `.env.example` trong repo chủ yếu đóng vai trò tham khảo. Không phải mọi service hiện tại đều tự động đọc toàn bộ biến trong file này.
 
-Nếu muốn thay đổi môi trường chạy, bạn có thể chỉnh trực tiếp các giá trị trong:
+Nếu thay đổi môi trường chạy, hãy kiểm tra các file:
 
-- `src/main/resources/application.properties`
-- `docker-compose.yml` (nếu có sử dụng Docker Compose)
+- `*/src/main/resources/application.properties`
+- `docker-compose.yml`
+- `nginx.conf`
 
-> Lưu ý: file `.env.example` chỉ mang tính minh họa cho các thông số cấu hình thường dùng. Trong project này, Spring Boot sử dụng các giá trị đã được khai báo sẵn trong `application.properties`. Khi chạy local, có thể dùng trực tiếp các giá trị mặc định đó. Nếu muốn thay đổi môi trường chạy, hãy cập nhật các thông số tương ứng trong file cấu hình của ứng dụng.
+### VNPay Sandbox
 
-### Các biến chính
-
-- `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`: cấu hình MySQL
-- `REDIS_HOST`, `REDIS_PORT`: cấu hình Redis
-- `KAFKA_BOOTSTRAP_SERVERS`: địa chỉ Kafka broker
-- `SCHEMA_REGISTRY_URL`: địa chỉ Schema Registry
-- `EUREKA_SERVER_URL`: địa chỉ Eureka
-- `KEYCLOAK_SERVER_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`: cấu hình xác thực Keycloak
-- `ZIPKIN_BASE_URL`: địa chỉ Zipkin
-- `NGINX_PORT`: cổng Nginx local
-
-### Biến môi trường liên quan đến VNPAY
-
-Nếu muốn chạy luồng thanh toán VNPAY ở môi trường local, cần cấu hình thêm:
+`payment-service` hỗ trợ các biến môi trường sau:
 
 - `VNPAY_TMN_CODE`
-- `VNPAY_HASH_SECRET`
-- `VNPAY_PAY_URL`
+- `VNPAY_SECRET_KEY`
 - `VNPAY_RETURN_URL`
+- `VNPAY_IPN_URL`
+- `FRONTEND_BASE_URL`
+- `ORDER_SERVICE_BASE_URL`
 
-Nếu không kiểm thử luồng thanh toán, có thể bỏ qua phần cấu hình này.
+Nếu chỉ chạy benchmark mà không kiểm thử VNPay, có thể sử dụng flow benchmark mà không cần hoàn thiện thanh toán thực tế.
+
+> **Security note:** không commit credential thật của VNPay, Cloudinary hoặc các external service lên public repository. Khi public/deploy project, nên truyền secret qua environment variables hoặc secret manager và rotate các credential đã từng bị lộ trong Git history.
+
+## Dữ liệu và thành phần có sẵn
+
+Repo đã chuẩn bị một số thành phần để tái hiện môi trường local:
+
+- `docker-compose.yml`: dựng các dependency chính.
+- `mysql-init/init.sql`: khởi tạo database business ban đầu.
+- `keycloak-data/realm-export.json`: import realm cho Keycloak.
+- `product-service`: có logic seed dữ liệu phục vụ demo inventory và benchmark.
+- `Jmeter Script/`: chứa test plan và dữ liệu cho hai kịch bản load test.
 
 ## Cách chạy local
-
-## Dữ liệu và thành phần đã có sẵn trong repo
-
-Repo local này đã chuẩn bị sẵn một phần dữ liệu/hạ tầng để demo:
-
-- `docker-compose.yml`: dựng MySQL, Redis, Kafka, Schema Registry, Keycloak, Prometheus, Grafana, Zipkin
-- `mysql-init/init.sql`: khởi tạo database business ban đầu
-- `keycloak-data/realm-export.json`: import realm cho Keycloak
-- `product-service`: có logic seed dữ liệu phục vụ demo inventory / benchmark
-
-Điều này giúp người clone có thể tái hiện môi trường local dễ hơn, nhưng vẫn nên đọc kỹ phần cấu hình trước khi chạy.
 
 ### 1. Clone project
 
 ```bash
 git clone https://github.com/truongnguyen3006/ecommerce-backend-1-.git
-cd <project-folder>
+cd ecommerce-backend-1-
 ```
 
 ### 2. Chạy hạ tầng
@@ -128,9 +149,9 @@ Tại thư mục gốc backend:
 docker compose up -d
 ```
 
-### 3. Chạy các service Spring Boot
+### 3. Chạy các Spring Boot service
 
-Có thể chạy bằng IDE hoặc Maven. Thứ tự nên chạy:
+Có thể chạy bằng IDE hoặc Maven. Thứ tự gợi ý:
 
 1. `discovery-server`
 2. `api-gateway`
@@ -149,97 +170,90 @@ cd order-service
 mvn spring-boot:run
 ```
 
+Nếu muốn benchmark qua Nginx với 2 API Gateway instances, chạy thêm một gateway instance tại `8090`, sau đó gửi traffic qua Nginx tại `8000`.
+
 ## Kiểm thử tải với JMeter
 
-Repo cung cấp 2 kịch bản trong thư mục [Jmeter Script](./Jmeter%20Script/) để kiểm thử luồng đặt hàng đồng thời:
+Repo cung cấp 2 kịch bản trong thư mục [Jmeter Script](./Jmeter%20Script/):
 
-- `oversell-single-sku.jmx`: nhiều request cùng đặt mua một SKU để kiểm tra khả năng chặn oversell
-- `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt mua nhiều SKU khác nhau để kiểm tra tải phân tán trên nhiều biến thể sản phẩm
+- `oversell-single-sku.jmx`: nhiều request cùng đặt một SKU để kiểm tra oversell.
+- `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt nhiều SKU khác nhau để kiểm tra tải phân tán.
 
 Các file dữ liệu đi kèm:
 
-- `data_oversell.csv`: chứa một `skuCode` dùng chung cho toàn bộ request
-- `data_multi.csv`: chứa danh sách nhiều `skuCode` để phân tán tải trên nhiều sản phẩm
+- `data_oversell.csv`: sử dụng một `skuCode` chung cho kịch bản oversell.
+- `data_multi.csv`: chứa nhiều `skuCode` để phân tán tải.
 
 ### Chuẩn bị trước khi chạy
 
-Trước khi chạy kịch bản, cần bảo đảm:
+Bảo đảm:
 
-- backend API đang chạy và truy cập được
-- các service liên quan đến luồng đặt hàng đã sẵn sàng
-- dữ liệu test hợp lệ, gồm user, SKU, tồn kho và trạng thái dịch vụ
-- đã có access token hợp lệ cho các request cần xác thực
+- Backend API đang chạy và truy cập được.
+- Các service trong checkout flow đã sẵn sàng.
+- User, SKU và inventory test tồn tại.
+- Access token còn hiệu lực.
+- JMeter trỏ đúng host/port và file CSV.
 
-### Cấu hình kịch bản trong JMeter
+### Cấu hình test plan
 
-Mở một trong hai file `.jmx` bằng JMeter, sau đó kiểm tra và cập nhật lại các thành phần sau:
+#### 1. API endpoint
 
-#### 1. Cấu hình địa chỉ API
-
-Trong các `HTTP Request`, cập nhật lại:
+Trong các `HTTP Request`, kiểm tra:
 
 - `Server Name or IP`
 - `Port Number`
 
-Theo địa chỉ backend đang sử dụng.
+Nếu benchmark thông qua Nginx, sử dụng host tương ứng và cổng `8000`.
 
-Nên dùng thống nhất một địa chỉ trong toàn bộ file test để tránh sai lệch kết quả khi benchmark.
+#### 2. CSV Data Set Config
 
-#### 2. Cấu hình file dữ liệu CSV
-
-Trong `CSV Data Set Config`, trỏ đúng tới file dữ liệu tương ứng trong thư mục `Jmeter Script`:
+Trỏ đúng tới:
 
 - `data_oversell.csv`
 - `data_multi.csv`
 
-Nếu JMeter đang giữ đường dẫn tuyệt đối cũ, cần sửa lại cho đúng vị trí hiện tại của file.
+Nếu `.jmx` đang chứa absolute path từ máy chạy benchmark trước đó, cần cập nhật lại đường dẫn.
 
-#### 3. Cập nhật access token
+#### 3. Access token
 
-Trong `HTTP Header Manager`, thay giá trị:
+Trong `HTTP Header Manager`:
 
 ```text
 Authorization: Bearer <access_token>
 ```
 
-bằng token mới.
+Token có thời hạn; khi hết hạn cần đăng nhập lại và cập nhật token trong test plan.
 
-Lưu ý: token có thời hạn. Khi hết hạn, cần đăng nhập lại để lấy token mới rồi cập nhật lại trong JMeter.
+#### 4. Thread count và Synchronizing Timer
 
-#### 4. Kiểm tra biến và tham số trong kịch bản
+Khi thay đổi số lượng virtual users, cần cập nhật cả:
 
-Trước khi chạy, nên kiểm tra lại các biến được sử dụng trong request, đặc biệt là:
+- `ThreadGroup.num_threads`
+- `Synchronizing Timer`
 
-- `skuCode` lấy từ file CSV
-- các giá trị trong request body
-- header xác thực
-- các biến dùng để phân biệt từng lần chạy nếu kịch bản có dùng tiền tố như `RUN_PREFIX`
+để contention được tạo đúng với mục tiêu benchmark.
 
-Nếu thay đổi số lượng request đồng thời, cần kiểm tra thêm các thành phần đồng bộ như `Synchronizing Timer` để giá trị khớp với số thread thực tế.
+> Screenshot benchmark của kịch bản oversell bên dưới được lưu từ một lần chạy **1,500 virtual users**. Test plan `.jmx` là cấu hình có thể điều chỉnh và thread count hiện tại có thể khác với lần benchmark đã chụp.
 
-### Cách lấy access token
+## Cách lấy access token
 
-Hệ thống sử dụng JWT access token cho các request cần xác thực trong JMeter.
+Hệ thống sử dụng JWT access token cho các request cần xác thực.
 
-#### Tài khoản dùng để test
+### Tài khoản local/demo
 
-**1. Keycloak Admin Console**
+**Keycloak Admin Console**
+
 - Username: `admin`
 - Password: `admin`
 
-> Đây là tài khoản dùng để đăng nhập vào **Keycloak Admin Console**, không phải tài khoản người dùng thông thường của ứng dụng.
+**Application admin**
 
-**2. Tài khoản admin của ứng dụng**
 - Username: `admin`
 - Password: `admin123`
 
-> Đây là tài khoản admin phía ứng dụng, có thể dùng để đăng nhập qua API, frontend hoặc Postman.
+> Các credential trên chỉ dành cho môi trường local/demo. Không sử dụng chúng cho môi trường public hoặc production.
 
-**3. Tài khoản người dùng thông thường**
-- Realm import của Keycloak có thể đã bao gồm sẵn một số tài khoản test.
-- Có thể tự đăng ký thêm tài khoản mới qua frontend hoặc API nếu cần.
-
-#### Cách 1: Lấy token bằng `curl`
+### Lấy token bằng `curl`
 
 ```bash
 curl -X POST http://localhost:8000/auth/login \
@@ -250,9 +264,7 @@ curl -X POST http://localhost:8000/auth/login \
   }'
 ```
 
-#### Cách 2: Lấy token bằng Postman
-
-Tạo request:
+### Lấy token bằng Postman
 
 ```http
 POST http://localhost:8000/auth/login
@@ -268,64 +280,90 @@ Body:
 }
 ```
 
-Sau khi đăng nhập thành công, copy giá trị `access_token` từ response và thay vào `HTTP Header Manager` trong file `.jmx`.
-Nếu token hết hạn có thể login lại để lấy.
+Copy `access_token` từ response và cập nhật vào `HTTP Header Manager` trong JMeter.
 
-### Lưu ý khi benchmark
+## Lưu ý khi benchmark
 
-Để kết quả ổn định hơn, nên gửi request trực tiếp tới địa chỉ chạy backend thay vì đi qua lớp trung gian không cần thiết.
-
-Nếu hệ thống chạy trong WSL2, có thể lấy IP bằng lệnh:
+- Sử dụng nhất quán cùng một gateway endpoint trong toàn bộ test plan.
+- Không trộn `localhost` và một IP khác nhau trong cùng một run.
+- Nếu chạy backend trong WSL2, có thể kiểm tra IP bằng:
 
 ```bash
 wsl ip -4 addr show eth0
 ```
 
-Tránh trộn nhiều kiểu địa chỉ khác nhau trong cùng một file test, ví dụ vừa dùng `localhost` vừa dùng IP khác, vì dễ gây sai lệch khi đo tải.
+- Kiểm tra SKU, inventory và token trước khi bắt đầu benchmark.
+- Không reset hoặc thay đổi dữ liệu giữa chừng nếu muốn so sánh các request trong cùng một run.
+- Nếu muốn các dashboard Grafana chỉ phản ánh một kịch bản duy nhất, cần reset/restart metrics hoặc chọn đúng time range trước khi chụp kết quả.
 
-### Gợi ý kiểm tra nhanh trước khi bấm chạy
+## Kết quả kiểm thử tải sau khi mở rộng lên 2 API Gateway instances
 
-Nên rà lại các điểm sau:
+### Kịch bản 1: Single-SKU oversell
 
-- backend trả response bình thường với request đặt hàng
-- SKU trong file CSV tồn tại thật trong hệ thống
-- tồn kho đủ hoặc đúng theo mục tiêu kiểm thử
-- token còn hiệu lực
-- toàn bộ `HTTP Request` đang trỏ đúng host và port
-- `CSV Data Set Config` đang đọc đúng file dữ liệu
-
-## Kết quả kiểm thử tải sau khi mở rộng lên 2 instance API Gateway
-### Kịch bản 1: Oversell trên một SKU: test trên sku NIK1-GREEN-39, số lượng ban đầu là 100
+SKU kiểm thử: `NIK1-GREEN-39`  
+Tồn kho ban đầu: **100**  
+Benchmark screenshot: **1,500 virtual users**
 
 #### JMeter Test Plan
-<img src="screenshots/testplan_oversell.png" alt="Admin" width="1507">
+
+<img src="screenshots/testplan_oversell.png" alt="JMeter oversell test plan" width="1507">
 
 #### JMeter Summary Report
-<img src="screenshots/Oversell_1500.png" alt="Admin" width="1504">
 
-#### Grafana dashboard Oversell success result: 100 yêu cầu thành công cộng với 1000 yêu cầu thành công từ kịch bản 2
-<img src="screenshots/result_oversell_1500_success.png" alt="Admin" width="746">
+<img src="screenshots/Oversell_1500.png" alt="JMeter 1500-user oversell summary report" width="1504">
 
-#### Grafana dashboard Oversell fail result: những yêu cầu còn lại thất bại do số lượng đã hết
-<img src="screenshots/result_oversell_1500_fail.png" alt="Admin" width="773">
+Trong lần benchmark được lưu:
 
-#### Kết quả tồn kho sau test của sku NIK1-GREEN-39
-<img src="screenshots/UI_oversell_1500.png" alt="Admin" width="1876">
+- `add-cart`: 1,500 samples, 0% JMeter error, throughput khoảng 455.0 req/s.
+- `checkout`: 1,500 samples, 1.87% JMeter error, throughput khoảng 276.2 req/s.
+- Tổng: 3,000 samples, throughput khoảng 343.8 req/s.
 
-### Kịch bản 2: Tải đồng thời trên nhiều SKU
+#### Grafana — trạng thái completed
+
+<img src="screenshots/result_oversell_1500_success.png" alt="Grafana cumulative completed orders after benchmark runs" width="746">
+
+> **Lưu ý về số `completed = 1100` trong ảnh:** dashboard Grafana sử dụng metric dạng tích lũy và chưa được reset giữa hai benchmark. Con số **1,100 = 100 đơn hoàn tất của kịch bản single-SKU oversell + 1,000 đơn hoàn tất của kịch bản multi-SKU**. Vì vậy không nên đọc 1,100 là số đơn thành công của riêng kịch bản 1.
+
+#### Grafana — trạng thái failed
+
+<img src="screenshots/result_oversell_1500_fail.png" alt="Grafana failed orders for the single-SKU oversell benchmark" width="773">
+
+Ảnh lưu `failed = 1372`. Kết hợp với JMeter Summary Report, 1,500 checkout samples có khoảng 28 request-level errors (1.87%); trong số request đi vào business flow, **100 đơn hoàn tất** và **1,372 đơn bị từ chối/thất bại khi tồn kho đã hết**.
+
+#### Tồn kho sau benchmark
+
+<img src="screenshots/UI_oversell_1500.png" alt="Inventory after single-SKU oversell benchmark" width="1876">
+
+SKU `NIK1-GREEN-39` có tồn kho cuối bằng **0**, không xuất hiện tồn kho âm trong kết quả được lưu.
+
+### Kịch bản 2: Multi-SKU concurrent checkout
+
+Kịch bản này phân tán request trên nhiều SKU nhằm kiểm tra tải concurrent mà không tập trung toàn bộ contention vào một SKU duy nhất.
 
 #### JMeter Test Plan
-<img src="screenshots/test_plan_multi.png" alt="Admin" width="1515">
+
+<img src="screenshots/test_plan_multi.png" alt="JMeter multi-SKU concurrent checkout test plan" width="1515">
 
 #### JMeter Summary Report
-<img src="screenshots/multi_1000.png" alt="Admin" width="1513">
 
-#### Grafana dashboard Oversell
-<img src="screenshots/grafana_multi.png" alt="Admin" width="791">
+<img src="screenshots/multi_1000.png" alt="JMeter 1000-request multi-SKU summary report" width="1513">
+
+Lần benchmark được lưu ghi nhận:
+
+- 1,000 checkout samples.
+- 0% JMeter error.
+- Average response time khoảng 1,964 ms.
+- Throughput khoảng 318.5 req/s.
+
+#### Grafana dashboard
+
+<img src="screenshots/grafana_multi.png" alt="Grafana dashboard for multi-SKU concurrent checkout" width="791">
 
 ## Cổng mặc định
 
-- Gateway: `8080`
+- API Gateway (primary): `8080`
+- API Gateway (second benchmark instance): `8090`
+- Nginx: `8000`
 - Eureka: `8761`
 - Inventory: `8082`
 - Product: `8083`
@@ -335,13 +373,14 @@ Nên rà lại các điểm sau:
 - Notification: `8087`
 - User: `8088`
 - Payment: `8089`
-- Nginx: `8000`
 
 ## Hạn chế hiện tại
 
-- Mục tiêu chính là kiểm thử tải và oversell, không phải hoàn thiện toàn bộ nghiệp vụ ecommerce
-- Payment hiện là luồng mô phỏng/tích hợp VNPay nếu không test benchmark
-- Dự án phù hợp cho chạy local và benchmark hơn là triển khai production ngay
+- Project tập trung vào load testing, overselling prevention và consistency hơn là hoàn thiện toàn bộ nghiệp vụ ecommerce production-ready.
+- Benchmark được thực hiện trên môi trường local/dev nên kết quả không đại diện cho production capacity.
+- Một số integration như VNPay và Cloudinary phụ thuộc external configuration.
+- Metrics Grafana trong các screenshot cũ có thể mang tính tích lũy nếu Prometheus/Grafana không được reset giữa các run.
+- Thread count trong file `.jmx` có thể được điều chỉnh sau benchmark; screenshot là bằng chứng của lần chạy được lưu tại thời điểm chụp.
 
 ## Tác giả
 
