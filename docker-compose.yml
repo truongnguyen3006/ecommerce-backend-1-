@@ -4,6 +4,11 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - micro_net
 
@@ -14,12 +19,12 @@ services:
     volumes:
       - keycloak-db-data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${KEYCLOAK_DB_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: keycloak
-      MYSQL_USER: keycloak
-      MYSQL_PASSWORD: password
+      MYSQL_USER: ${KEYCLOAK_DB_USERNAME:-keycloak}
+      MYSQL_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-password}
     healthcheck:
-      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -proot" ]
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -35,10 +40,10 @@ services:
       KC_DB: mysql
       KC_DB_URL_HOST: keycloak-mysql
       KC_DB_DATABASE: keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: password
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USERNAME:-keycloak}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-password}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HTTP_PORT: 8085
       KC_HOSTNAME: localhost
       KC_HOSTNAME_URL: http://localhost:8085
@@ -115,8 +120,8 @@ services:
     depends_on:
       - prometheus
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USERNAME:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
       # 1. Nạp datasource (có UID df6nugk7yzqpsc)
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
@@ -155,7 +160,7 @@ services:
       PMA_HOST: mysql-business   # Tên service MySQL của bạn
       PMA_PORT: 3306
       PMA_USER: root
-      PMA_PASSWORD: root         # Pass bạn đã cài
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-root}         # Pass bạn đã cài
     ports:
       - "8888:80"                # Truy cập qua cổng 8888 để không đụng cổng 80 của Nginx
     networks:
@@ -168,9 +173,9 @@ services:
     image: mysql:8
     container_name: mysql-business
     ports:
-      - "3306:3306" # Mở cổng 3306 ra ngoài để Spring Boot kết nối vào
+      - "${MYSQL_PORT:-3306}:3306" # Mở cổng 3306 ra ngoài để Spring Boot kết nối vào
     environment:
-      MYSQL_ROOT_PASSWORD: root  # Pass giống trong application.properties của bạn
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-root}
     volumes:
       # Mount dữ liệu khởi tạo (Chạy 1 lần đầu tiên)
       - ./mysql-init:/docker-entrypoint-initdb.d
@@ -179,7 +184,7 @@ services:
     networks:
       - micro_net
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      test: [ "CMD-SHELL", "mysql -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} -e 'SELECT 1'" ]
       interval: 10s
       timeout: 5s
       retries: 5

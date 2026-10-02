@@ -5,17 +5,18 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import jakarta.validation.constraints.*;
 
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 
 @Data
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
 public class OrderLineItemRequest {
-    @NotBlank // Thêm validation
+    @NotBlank @Size(max = 255)
     private String skuCode;
-    @Min(1) // Thêm validation
+    @NotNull @Positive
     private Integer quantity;
 }

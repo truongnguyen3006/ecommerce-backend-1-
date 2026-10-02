@@ -10,5 +10,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 public class TokenRefreshRequest {
+    @jakarta.validation.constraints.NotBlank
     private String refreshToken;
 }

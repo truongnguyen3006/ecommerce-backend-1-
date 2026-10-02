@@ -1,18 +1,18 @@
 package com.myexampleproject.common.dto;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
+import lombok.*;
 
 @Data
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
 public class ErrorResponse {
-    private String errorCode; // Ví dụ: ORDER_NOT_FOUND, OUT_OF_STOCK
-    private String message;   // Message chi tiết cho Dev/User
-    private int status;       // HTTP Status Code (400, 404, 500)
     private String timestamp;
+    private int status;
+    private String code;
+    private String message;
+    private String path;
+
+    // Preserve the old response field for existing consumers.
+    public String getErrorCode() { return code; }
 }

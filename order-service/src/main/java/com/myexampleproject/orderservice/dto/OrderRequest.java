@@ -1,6 +1,8 @@
 package com.myexampleproject.orderservice.dto;
 
 import java.util.List;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
 
 import com.myexampleproject.common.dto.OrderLineItemRequest;
 import lombok.AllArgsConstructor;
@@ -13,10 +15,16 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @Builder
 public class OrderRequest {
-    private List<OrderLineItemRequest> items;
+    @NotEmpty @Size(max = 100) @Valid
+    private List<@NotNull OrderLineItemRequest> items;
+    @Pattern(regexp = "(?i)COD|VNPAY")
     private String paymentMethod;
+    @Size(max=128)
     private String shippingAddressLabel;
+    @Size(max=128)
     private String shippingRecipientName;
+    @Size(max=32)
     private String shippingRecipientPhone;
+    @Size(max=512)
     private String shippingAddressLine;
 }

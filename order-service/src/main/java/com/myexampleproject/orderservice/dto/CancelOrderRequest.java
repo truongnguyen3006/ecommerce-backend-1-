@@ -8,5 +8,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CancelOrderRequest {
+    @jakarta.validation.constraints.Size(max=255)
     private String reason;
 }
