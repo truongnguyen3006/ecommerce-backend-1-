@@ -2,6 +2,8 @@
 
 Backend microservices được xây dựng để kiểm thử **concurrent checkout**, **inventory consistency** và nguy cơ **overselling** khi nhiều người dùng cùng đặt hàng trong một khoảng thời gian ngắn.
 
+Batch 1 trên `project1-recovery` bổ sung validation, phân trang/tìm kiếm sản phẩm, quyền sở hữu giỏ hàng/đơn hàng, xử lý event trùng và migration có kiểm soát. Xem [báo cáo và checklist chạy local](docs/batch1-finalization.md) cùng [danh sách file thay đổi](docs/batch1-changed-files.md). Bản hiện tại đã qua `mvn clean verify` với 61 test trên JDK 24; các benchmark bên dưới là kết quả lịch sử, chưa được chạy lại sau Batch 1.
+
 Trọng tâm của project không phải là hoàn thiện toàn bộ nghiệp vụ ecommerce cho production, mà là xây dựng một hệ thống đủ thực tế để thử nghiệm cách các microservice, cache, database, Kafka và API Gateway phối hợp dưới tải đồng thời.
 
 ## Kết quả nổi bật

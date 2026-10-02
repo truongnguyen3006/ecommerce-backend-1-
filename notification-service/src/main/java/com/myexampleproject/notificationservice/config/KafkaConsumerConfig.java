@@ -11,20 +11,39 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
 import java.util.HashMap;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.*;
+import org.springframework.util.backoff.FixedBackOff;
+import org.apache.kafka.common.TopicPartition;
 import java.util.Map;
 
 @Configuration
 public class KafkaConsumerConfig {
+    @Value("${spring.kafka.bootstrap-servers}") private String bootstrap;
+    @Value("${spring.kafka.properties.schema.registry.url}") private String registry;
+    @Value("${spring.kafka.consumer.group-id}") private String group;
+    private final KafkaTemplate<String,Object> template;
+    public KafkaConsumerConfig(KafkaTemplate<String,Object> template) { this.template = template; }
+    private DefaultErrorHandler errors() {
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(template, (record, ex) -> new TopicPartition(record.topic() + ".DLT", -1));
+        recoverer.setFailIfSendResultIsError(true);
+        return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2L));
+    }
 
     private Map<String, Object> baseProps() {
         Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaJsonSchemaDeserializer.class);
-        props.put("schema.registry.url", "http://localhost:8081");
+        props.put("schema.registry.url", registry);
         props.put("use.latest.version", true);
         props.put("oneof.for.nullables", false);
         props.put("json.ignore.unknown", true);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, group);
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         return props;
     }
 
@@ -41,6 +60,7 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, OrderPlacedEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(orderPlacedConsumerFactory());
+        factory.setCommonErrorHandler(errors());
         return factory;
     }
 
@@ -57,6 +77,7 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, PaymentProcessedEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(paymentProcessedConsumerFactory());
+        factory.setCommonErrorHandler(errors());
         return factory;
     }
 
@@ -73,6 +94,7 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, PaymentFailedEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(paymentFailedConsumerFactory());
+        factory.setCommonErrorHandler(errors());
         return factory;
     }
 
@@ -88,6 +110,7 @@ public class KafkaConsumerConfig {
         ConcurrentKafkaListenerContainerFactory<String, OrderFailedEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(orderFailedConsumerFactory());
+        factory.setCommonErrorHandler(errors());
         return factory;
     }
 }

@@ -1,5 +1,7 @@
 # Project 1 local startup audit
 
+> Đây là audit khôi phục trước Batch 1. Runbook hiện tại và các thay đổi bảo mật/Redis/seed/migration nằm trong [báo cáo Batch 1](batch1-finalization.md). Các nhận xét về JWT cache, Notification permit-all, Cart connection factory và seed cộng dồn dưới đây mô tả phiên bản trước Batch 1.
+
 Phạm vi: branch `project1-recovery`, Spring services chạy trên Windows/IDE, dependencies chạy bằng Docker Desktop. Giữ nguyên microservices và nghiệp vụ hiện có.
 
 ## Nguyên nhân và sửa đổi

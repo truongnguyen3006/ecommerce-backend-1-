@@ -32,6 +32,9 @@ public class KafkaStreamsConfig {
     @Value("${spring.kafka.streams.properties.state.dir}")
     private String stateDir;
 
+    @Value("${spring.kafka.streams.properties.num.stream.threads:4}")
+    private int streamThreads;
+
     /*
      * XÓA BỎ BEAN 'inventoryKafkaStreams' Ở ĐÂY.
      * CHÚNG TA SẼ INJECT TRỰC TIẾP StreamsBuilderFactoryBean VÀO SERVICE.
@@ -67,7 +70,8 @@ public class KafkaStreamsConfig {
         props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
 
         // STREAMS TUNING
-        props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 5000);
+        props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);
+        props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, streamThreads);
         props.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 10_485_760);
 
         // CONSUMER CONFIG

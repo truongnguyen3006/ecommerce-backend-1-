@@ -16,11 +16,18 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
 
 import java.util.HashMap;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.apache.kafka.common.TopicPartition;
+import org.springframework.util.backoff.FixedBackOff;
 import java.util.Map;
 
 @EnableKafka
 @Configuration
 public class KafkaConsumerConfig {
+    private final KafkaTemplate<String,Object> template;
+    public KafkaConsumerConfig(KafkaTemplate<String,Object> template) { this.template = template; }
 
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
@@ -47,6 +54,8 @@ public class KafkaConsumerConfig {
         props.put("json.ignore.unknown", true);
         props.put("specific.avro.reader", true);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
 
         // Tăng batch size để poll nhiều record/lần
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1000");
@@ -71,6 +80,11 @@ public class KafkaConsumerConfig {
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
         factory.getContainerProperties().setSyncCommits(true);
 
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(template, (record, ex) -> new TopicPartition(record.topic() + ".DLT", -1));
+        recoverer.setFailIfSendResultIsError(true);
+        DefaultErrorHandler errors = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2L));
+        errors.addNotRetryableExceptions(IllegalArgumentException.class);
+        factory.setCommonErrorHandler(errors);
         return factory;
     }
 

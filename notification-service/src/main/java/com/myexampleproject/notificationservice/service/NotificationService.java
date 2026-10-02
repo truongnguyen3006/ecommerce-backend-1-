@@ -47,35 +47,15 @@ public class NotificationService {
     }
 
     // SỬA HÀM NÀY: Nhận ConsumerRecord thay vì @Payload Object
-    @KafkaListener(topics = "order-failed-topic", groupId = "notification-group")
-    public void handleOrderFailed(ConsumerRecord<String, String> record) { // Nhận String thô
-        try {
-            String json = cleanJson(record.value()); // Làm sạch chuỗi JSON
-            OrderFailedEvent event = objectMapper.readValue(json, OrderFailedEvent.class);
-
-            log.warn("Notification: Inventory Failed for Order {}", event.getOrderNumber());
-
-            messagingTemplate.convertAndSend("/topic/order/" + event.getOrderNumber(),
-                    Map.of("status", "FAILED", "message", "Hết hàng: " + event.getReason()));
-        } catch (Exception e) {
-            log.error("Lỗi parse OrderFailedEvent: {}", e.getMessage());
-        }
+    @KafkaListener(topics = "order-failed-topic", groupId = "notification-group", containerFactory = "orderFailedKafkaListenerContainerFactory")
+    public void handleOrderFailed(@Payload OrderFailedEvent event) {
+        messagingTemplate.convertAndSend("/topic/order/" + event.getOrderNumber(), Map.of("status", "FAILED", "message", "Không đủ tồn kho"));
     }
 
     // SỬA HÀM NÀY: Nhận ConsumerRecord thay vì @Payload Object
-    @KafkaListener(topics = "payment-failed-topic", groupId = "notification-group")
-    public void handlePaymentFailed(ConsumerRecord<String, String> record) { // Nhận String thô
-        try {
-            String json = cleanJson(record.value()); // Làm sạch chuỗi JSON
-            PaymentFailedEvent event = objectMapper.readValue(json, PaymentFailedEvent.class);
-
-            log.warn("Notification: Payment Failed for Order {}", event.getOrderNumber());
-
-            messagingTemplate.convertAndSend("/topic/order/" + event.getOrderNumber(),
-                    Map.of("status", "PAYMENT_FAILED", "message", "Thanh toán lỗi: " + event.getReason()));
-        } catch (Exception e) {
-            log.error("Lỗi parse PaymentFailedEvent: {}", e.getMessage());
-        }
+    @KafkaListener(topics = "payment-failed-topic", groupId = "notification-group", containerFactory = "paymentFailedKafkaListenerContainerFactory")
+    public void handlePaymentFailed(@Payload PaymentFailedEvent event) {
+        messagingTemplate.convertAndSend("/topic/order/" + event.getOrderNumber(), Map.of("status", "PAYMENT_FAILED", "message", "Thanh toán thất bại"));
     }
 
     // --- HÀM PHỤ TRỢ: Lọc bỏ "Magic Bytes" của Kafka Schema Registry ---
