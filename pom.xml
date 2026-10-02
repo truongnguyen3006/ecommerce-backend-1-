@@ -30,6 +30,7 @@
     </modules>
 
     <properties>
+        <java.version>24</java.version>
         <maven.compiler.source>24</maven.compiler.source>
         <maven.compiler.target>24</maven.compiler.target>
         <spring-cloud.version>2025.0.0</spring-cloud.version>
@@ -88,7 +89,7 @@
                 <version>3.4.1</version>
                 <configuration>
                     <from>
-                        <image>eclipse-temurin:21-jre</image>
+                        <image>eclipse-temurin:24-jre</image>
                     </from>
                     <to>
                         <image>truongnguyen3006/${project.artifactId}:${image.tag}</image>

@@ -137,7 +137,7 @@ Repo đã chuẩn bị một số thành phần để tái hiện môi trường
 ### 1. Clone project
 
 ```bash
-git clone https://github.com/truongnguyen3006/ecommerce-backend-1-.git
+git clone --single-branch --branch project1-recovery https://github.com/truongnguyen3006/ecommerce-backend-1-.git
 cd ecommerce-backend-1-
 ```
 
@@ -146,22 +146,31 @@ cd ecommerce-backend-1-
 Tại thư mục gốc backend:
 
 ```bash
-docker compose up -d
+docker compose up -d mysql-business redis keycloak-mysql keycloak kafka schema-registry
+docker compose ps
 ```
 
 ### 3. Chạy các Spring Boot service
 
 Có thể chạy bằng IDE hoặc Maven. Thứ tự gợi ý:
 
+Trước khi chạy service, build/install các module dùng chung tại thư mục gốc:
+
+```bash
+mvn -DskipTests install
+```
+
+Đợi Docker dependencies sẵn sàng và kiểm tra token Keycloak theo [startup audit](docs/local-startup-audit.md), sau đó chạy mỗi service trong terminal/IDE riêng:
+
 1. `discovery-server`
-2. `api-gateway`
-3. `user-service`
-4. `product-service`
-5. `inventory-service`
-6. `order-service`
-7. `payment-service`
-8. `cart-service`
-9. `notification-service`
+2. `inventory-service`
+3. `order-service`
+4. `payment-service`
+5. `cart-service`
+6. `notification-service`
+7. `user-service`
+8. `product-service` (seeder phát event; các consumer phía trên nên sẵn sàng trước)
+9. `api-gateway`
 
 Ví dụ:
 
@@ -171,6 +180,15 @@ mvn spring-boot:run
 ```
 
 Nếu muốn benchmark qua Nginx với 2 API Gateway instances, chạy thêm một gateway instance tại `8090`, sau đó gửi traffic qua Nginx tại `8000`.
+
+`nginx.conf` hiện trỏ tới cả `8080` và `8090`. Nếu chỉ chạy một gateway, kiểm tra API trực tiếp tại `8080`. Chạy đủ hai gateway trước khi dùng Nginx:
+
+```bash
+mvn -pl api-gateway spring-boot:run -Dspring-boot.run.arguments=--server.port=8090
+docker compose up -d nginx
+```
+
+Chi tiết nguyên nhân lỗi, bảng cổng/database/Kafka group, cách kiểm tra Keycloak đã có dữ liệu và xử lý Windows process chiếm cổng 8087: [Local startup audit](docs/local-startup-audit.md).
 
 ## Kiểm thử tải với JMeter
 
@@ -249,7 +267,7 @@ Hệ thống sử dụng JWT access token cho các request cần xác thực.
 **Application admin**
 
 - Username: `admin`
-- Password: `admin123`
+- Password: `admin123456@` (do `UserSeeder` tạo khi chưa có tài khoản; tài khoản đã có giữ mật khẩu hiện tại)
 
 > Các credential trên chỉ dành cho môi trường local/demo. Không sử dụng chúng cho môi trường public hoặc production.
 
@@ -260,7 +278,7 @@ curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
-    "password": "admin123"
+    "password": "admin123456@"
   }'
 ```
 
@@ -276,7 +294,7 @@ Body:
 ```json
 {
   "username": "admin",
-  "password": "admin123"
+  "password": "admin123456@"
 }
 ```
 

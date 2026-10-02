@@ -744,7 +744,7 @@
       "enabled": true,
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "ProjectFinalYearSecretKey2025",
+      "secret": "local-demo-client-secret",
       "redirectUris": [
         "/*"
       ],

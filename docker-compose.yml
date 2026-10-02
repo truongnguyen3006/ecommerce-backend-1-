@@ -47,7 +47,7 @@ services:
     ports:
       - "8085:8085"
     volumes:
-      - ./keycloak-data:/opt/keycloak/data/import
+      - ./keycloak-data/realm-export.json:/opt/keycloak/data/import/spring-boot-microservices-realm-realm.json:ro
     depends_on:
       keycloak-mysql:
         condition: service_healthy

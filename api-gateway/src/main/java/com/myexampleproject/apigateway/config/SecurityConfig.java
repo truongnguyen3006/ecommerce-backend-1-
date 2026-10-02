@@ -1,5 +1,6 @@
 package com.myexampleproject.apigateway.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -7,6 +8,7 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.security.web.server.SecurityWebFilterChain;
@@ -20,12 +22,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Configuration
 @EnableWebFluxSecurity
 public class SecurityConfig {
+    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
+    private String issuerUri;
+
     private final Map<String, Mono<Jwt>> tokenCache = new ConcurrentHashMap<>();
     private final Map<String, CachedDecoder> jwkDecoderCache = new ConcurrentHashMap<>();
     @Bean
     public ReactiveJwtDecoder reactiveJwtDecoder() {
         return token -> {
-            String jwkUri = "http://keycloak:8085/realms/spring-boot-microservices-realm/protocol/openid-connect/certs";
+            String jwkUri = issuerUri + "/protocol/openid-connect/certs";
             ReactiveJwtDecoder decoder = getCachedDecoder(jwkUri);
             return tokenCache.computeIfAbsent(token,
                     t -> Mono.defer(() -> decoder.decode(t))
@@ -57,7 +62,8 @@ public class SecurityConfig {
             return cached.decoder;
         }
 
-        ReactiveJwtDecoder newDecoder = NimbusReactiveJwtDecoder.withJwkSetUri(jwkUri).build();
+        NimbusReactiveJwtDecoder newDecoder = NimbusReactiveJwtDecoder.withJwkSetUri(jwkUri).build();
+        newDecoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(issuerUri));
         jwkDecoderCache.put(jwkUri, new CachedDecoder(newDecoder, Instant.now()));
         return newDecoder;
     }
