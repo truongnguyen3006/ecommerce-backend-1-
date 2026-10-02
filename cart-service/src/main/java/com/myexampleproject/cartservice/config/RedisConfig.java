@@ -9,20 +9,16 @@ import com.fasterxml.jackson.databind.SerializationFeature; // <-- Thêm import
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.*;
 
 @Configuration
 public class  RedisConfig {
 
-    @Bean
-    public LettuceConnectionFactory redisConnectionFactory() {
-        return new LettuceConnectionFactory();
-    }
 
     @Bean
-    public RedisTemplate<String, Object> redisTemplate(LettuceConnectionFactory connFactory) {
+    public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connFactory) {
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(connFactory);
 
@@ -34,7 +30,10 @@ public class  RedisConfig {
         // Kích hoạt tính năng lưu trữ Type Info (thông tin class)
         // Bằng cách này, Redis sẽ lưu: "@class": "com.myexample.CartEntity", ...
         PolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
-                .allowIfBaseType(Object.class) // Cho phép bất kỳ class nào
+                .allowIfSubType("com.myexampleproject.")
+                .allowIfSubType("java.util.")
+                .allowIfSubType("java.math.")
+                .allowIfSubType("java.time.") // Cho phép bất kỳ class nào
                 .build();
         om.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
 

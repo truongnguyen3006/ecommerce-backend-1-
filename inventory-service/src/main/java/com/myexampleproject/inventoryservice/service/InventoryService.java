@@ -9,6 +9,8 @@ import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
 import org.springframework.kafka.config.StreamsBuilderFactoryBean; // Import này là đúng
 import org.springframework.stereotype.Service;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 @Slf4j
 @Service
@@ -33,7 +35,8 @@ public class InventoryService {
     public Integer getQuantity(String sku) {
         ReadOnlyKeyValueStore<String, Integer> store = waitUntilStoreIsReady();
         Integer qty = store.get(sku);
-        return qty != null ? qty : 0;
+        if (qty == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Inventory SKU not found");
+        return qty;
     }
 
     /**
@@ -77,7 +80,7 @@ public class InventoryService {
             sleep(300);
         }
 
-        throw new IllegalStateException("StateStore chưa ready sau 30 lần retry!");
+        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Inventory state store is not ready");
     }
 
     /**
@@ -125,7 +128,9 @@ public class InventoryService {
     private void sleep(long ms) {
         try {
             Thread.sleep(ms);
-        } catch (Exception ignored) {
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Inventory query interrupted");
         }
     }
 }

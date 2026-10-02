@@ -1,161 +1,112 @@
 package com.myexampleproject.inventoryservice.config;
 
-import com.myexampleproject.common.dto.OrderLineItemRequest;
-import com.myexampleproject.common.dto.OrderLineItemsDto;
 import com.myexampleproject.common.event.*;
+import io.micrometer.core.instrument.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.StreamsBuilder;
+import org.apache.kafka.streams.*;
 import org.apache.kafka.streams.kstream.*;
 import org.apache.kafka.streams.processor.ProcessorContext;
-import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.streams.state.ValueAndTimestamp; // <-- THÊM IMPORT NÀY
-
+import org.apache.kafka.streams.state.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-
-// Thêm các import này
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Tags;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.Map;
 
+/** Same keyed, transactional stock store; commands are validated and repeated checks are idempotent. */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class InventoryTopology {
-
     public static final String INVENTORY_STORE = "inventory-store";
-
+    public static final String CHECK_STORE = "inventory-processed-checks";
+    public static final String ADJUST_STORE = "inventory-processed-adjustments";
     private final SerdeConfig serdeConfig;
-
-    // 1. INJECT METER REGISTRY (Lombok sẽ tự tạo constructor cho final field này)
     private final MeterRegistry meterRegistry;
-    private final Map<String, AtomicInteger> stockGauges = new ConcurrentHashMap<>();
-
-    // Thêm hàm này vào cuối class InventoryTopology
-    private void updateStockMetric(String sku, int newStock) {
-        try {
-            // Tìm Gauge của SKU này, nếu chưa có thì tạo mới
-            AtomicInteger gauge = stockGauges.computeIfAbsent(sku, k -> {
-                return meterRegistry.gauge("inventory_stock_level", Tags.of("sku", k), new AtomicInteger(newStock));
-            });
-
-            // Cập nhật giá trị mới
-            if (gauge != null) {
-                gauge.set(newStock);
-            }
-        } catch (Exception e) {
-            // Chỉ log warning, KHÔNG ném exception để tránh làm rollback transaction Kafka
-            log.warn("Lỗi cập nhật metrics cho SKU {}: {}", sku, e.getMessage());
-        }
-    }
+    private final Map<String, AtomicInteger> gauges = new ConcurrentHashMap<>();
 
     @Autowired
     public void buildTopology(StreamsBuilder builder) {
+        var strings = Serdes.String();
+        var resultSerde = serdeConfig.jsonSchemaSerde(InventoryCheckResult.class);
+        builder.addStateStore(Stores.timestampedKeyValueStoreBuilder(Stores.persistentTimestampedKeyValueStore(INVENTORY_STORE), strings, Serdes.Integer()));
+        builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(CHECK_STORE), strings, resultSerde));
+        builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(ADJUST_STORE), strings, strings));
 
-        var stringSerde = Serdes.String();
-        var intSerde = Serdes.Integer();
+        KStream<String, String> creations = builder.stream("product-created-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(ProductCreatedEvent.class)))
+                .filter((key, event) -> event != null && event.getSkuCode() != null && !event.getSkuCode().isBlank()
+                        && event.getInitialQuantity() != null && event.getInitialQuantity() >= 0)
+                .map((key, event) -> KeyValue.pair(event.getSkuCode(), "INIT:" + event.getInitialQuantity()));
+        KStream<String, String> adjustments = builder.stream("inventory-adjustment-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(InventoryAdjustmentEvent.class)))
+                .filter((key, event) -> event != null && event.getSkuCode() != null && !event.getSkuCode().isBlank())
+                .map((key, event) -> KeyValue.pair(event.getSkuCode(), "ADJUST:" + event.getAdjustmentQuantity() + ":" + (event.getReason() == null ? "" : event.getReason())));
+        creations.merge(adjustments)
+                .repartition(Repartitioned.with(strings, strings).withName("stock-changes-by-sku-v12").withNumberOfPartitions(10))
+                .transform(() -> new Transformer<String, String, KeyValue<String, Integer>>() {
+                    private KeyValueStore<String, ValueAndTimestamp<Integer>> stock;
+                    private KeyValueStore<String, String> processed;
+                    private ProcessorContext context;
+                    public void init(ProcessorContext context) {
+                        this.context = context;stock = context.getStateStore(INVENTORY_STORE);processed = context.getStateStore(ADJUST_STORE);
+                    }
+                    public KeyValue<String, Integer> transform(String sku, String command) {
+                        String[] parts = command.split(":", 3);
+                        int quantity = Integer.parseInt(parts[1]);
+                        ValueAndTimestamp<Integer> current = stock.get(sku);
+                        if (parts[0].equals("INIT")) {
+                            if (current == null) { stock.put(sku, ValueAndTimestamp.make(quantity, context.timestamp()));metric(sku, quantity); }
+                            return null;
+                        }
+                        String reason = parts.length > 2 ? parts[2] : "";
+                        String commandId = sku + ":" + reason;
+                        boolean compensation = reason.startsWith("CANCELLED:") || reason.startsWith("COMPENSATION:") || reason.startsWith("INVENTORY_FAILED:");
+                        if (compensation && processed.get(commandId) != null) return null;
+                        if (current == null) { log.warn("Ignoring adjustment for unknown SKU {}", sku);return null; }
+                        long next = (long)current.value() + quantity;
+                        if (next < 0 || next > Integer.MAX_VALUE || quantity == 0) { log.warn("Rejected out-of-range adjustment for {}", sku);return null; }
+                        stock.put(sku, ValueAndTimestamp.make((int)next, context.timestamp()));
+                        if (compensation) processed.put(commandId, "done");
+                        metric(sku, (int)next);
+                        return null;
+                    }
+                    public void close() {}
+                }, INVENTORY_STORE, ADJUST_STORE);
 
-        var productSerde = serdeConfig.jsonSchemaSerde(ProductCreatedEvent.class);
-        var adjustSerde = serdeConfig.jsonSchemaSerde(InventoryAdjustmentEvent.class);
-        var checkRequestSerde = serdeConfig.jsonSchemaSerde(InventoryCheckRequest.class);
-        var checkResultSerde = serdeConfig.jsonSchemaSerde(InventoryCheckResult.class);
+        builder.stream("inventory-check-request-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(InventoryCheckRequest.class)))
+                .filter((key, request) -> request != null && request.getOrderNumber() != null && !request.getOrderNumber().isBlank()
+                        && request.getItem() != null && request.getItem().getSkuCode() != null && !request.getItem().getSkuCode().isBlank())
+                .selectKey((key, request) -> request.getItem().getSkuCode())
+                .repartition(Repartitioned.with(strings, serdeConfig.jsonSchemaSerde(InventoryCheckRequest.class)).withName("checks-by-sku-v12").withNumberOfPartitions(10))
+                .transform(() -> new Transformer<String, InventoryCheckRequest, KeyValue<String, InventoryCheckResult>>() {
+                    private KeyValueStore<String, ValueAndTimestamp<Integer>> stock;
+                    private KeyValueStore<String, InventoryCheckResult> processed;
+                    private ProcessorContext context;
+                    public void init(ProcessorContext context) {
+                        this.context = context;stock = context.getStateStore(INVENTORY_STORE);processed = context.getStateStore(CHECK_STORE);
+                    }
+                    public KeyValue<String, InventoryCheckResult> transform(String sku, InventoryCheckRequest request) {
+                        String checkId = request.getOrderNumber() + ":" + sku;
+                        InventoryCheckResult previous = processed.get(checkId);
+                        if (previous != null) return KeyValue.pair(request.getOrderNumber(), previous);
+                        Integer quantity = request.getItem().getQuantity();
+                        ValueAndTimestamp<Integer> value = stock.get(sku);
+                        int current = value == null ? 0 : value.value();
+                        boolean valid = quantity != null && quantity > 0 && value != null && quantity <= current;
+                        String reason = valid ? null : "Invalid quantity or insufficient stock for " + sku;
+                        if (valid) { stock.put(sku, ValueAndTimestamp.make(current - quantity, context.timestamp()));metric(sku, current - quantity); }
+                        InventoryCheckResult result = new InventoryCheckResult(request.getOrderNumber(), request.getItem(), valid, reason);
+                        processed.put(checkId, result);
+                        return KeyValue.pair(request.getOrderNumber(), result);
+                    }
+                    public void close() {}
+                }, INVENTORY_STORE, CHECK_STORE)
+                .to("inventory-check-result-topic", Produced.with(strings, resultSerde));
+    }
 
-        // ==========================================================
-        // BUILDER A: Xây dựng KTable (Kho)
-        // (Không thay đổi)
-        // ==========================================================
-
-        KStream<String, Integer> productStream = builder
-                .stream("product-created-topic", Consumed.with(stringSerde, productSerde))
-                .map((key, event) -> KeyValue.pair(event.getSkuCode(), Math.max(0, event.getInitialQuantity())))
-                .repartition(Repartitioned.with(stringSerde, intSerde).withName("product-repartition-by-sku"));
-
-        KStream<String, Integer> adjustStream = builder
-                .stream("inventory-adjustment-topic", Consumed.with(stringSerde, adjustSerde))
-                .mapValues(InventoryAdjustmentEvent::getAdjustmentQuantity)
-                .repartition(Repartitioned.with(stringSerde, intSerde).withName("adjust-repartition-by-sku"));
-        // Hợp nhất luồng tạo sản phẩm và luồng điều chỉnh kho
-        KStream<String, Integer> inventoryChanges = productStream.merge(adjustStream);
-        inventoryChanges
-                .groupByKey(Grouped.with(stringSerde, intSerde))
-                .aggregate(
-                        () -> 0,
-                        (sku, change, currentStock) -> {
-                            // Logic nghiệp vụ: Tính toán tồn kho mới
-                            long newStock = (long) currentStock + change;
-                            int finalStock = (int) Math.max(0, Math.min(newStock, Integer.MAX_VALUE));
-                            log.info("AGGREGATE STOCK → {} ({} + {}) = {}", sku, currentStock, change, finalStock);
-                            return finalStock;
-                        },
-                        // Lưu kết quả vào State Store cục bộ (RocksDB) để truy xuất nhanh
-                        Materialized.<String, Integer, KeyValueStore<Bytes, byte[]>>as(INVENTORY_STORE)
-                                .withKeySerde(stringSerde)
-                                .withValueSerde(intSerde) // <-- Value là Integer
-                );
-
-        // ==========================================================
-        // BUILDER B: Xử lý Đơn hàng (SAGA)
-        // (SỬA LẠI CHO ĐÚNG)
-        // ==========================================================
-
-        builder.stream("inventory-check-request-topic", Consumed.with(stringSerde, checkRequestSerde))
-                .transform(
-                        () -> new Transformer<String, InventoryCheckRequest, KeyValue<String, InventoryCheckResult>>() {
-
-                            // SỬA 1: Store phải là <String, ValueAndTimestamp<Integer>>
-                            private KeyValueStore<String, ValueAndTimestamp<Integer>> store;
-                            private ProcessorContext context;
-
-                            @Override
-                            public void init(ProcessorContext context) {
-                                this.context = context;
-                                // Kafka tự động cast về đúng kiểu
-                                this.store = context.getStateStore(INVENTORY_STORE);
-                            }
-
-                            @Override
-                            public KeyValue<String, InventoryCheckResult> transform(String skuCode, InventoryCheckRequest request) {
-                                OrderLineItemRequest item = request.getItem();
-                                String orderNumber = request.getOrderNumber();
-                                String reason = null;
-                                boolean success = false;
-                                ValueAndTimestamp<Integer> stockWithTimestamp = store.get(skuCode);
-                                Integer currentStock = (stockWithTimestamp != null) ? stockWithTimestamp.value() : 0;
-                                if (currentStock == null) currentStock = 0;
-                                if (currentStock < item.getQuantity()) {
-                                    reason = "Not enough stock for " + skuCode + " (need " + item.getQuantity() + ", have " + currentStock + ")";
-                                    log.warn("INVENTORY CHECK FAILED → Order {}: {}", orderNumber, reason);
-                                    success = false;
-                                } else {
-                                    int newStock = currentStock - item.getQuantity();
-                                    store.put(skuCode, ValueAndTimestamp.make(newStock, context.timestamp()));
-                                    //gọi hàm cập nhật Metrics
-                                    updateStockMetric(skuCode, newStock);
-                                    log.info("INVENTORY COMMIT (SAGA) → {} ({} → {})", skuCode, currentStock, newStock);
-                                    success = true;
-                                }
-                                // Gửi kết quả (key=orderNumber)
-                                return KeyValue.pair(
-                                        orderNumber,
-                                        new InventoryCheckResult(orderNumber, item, success, reason)
-                                );
-                            }
-
-
-
-                            @Override
-                            public void close() {}
-                        },
-                        INVENTORY_STORE
-                )
-                .to("inventory-check-result-topic", Produced.with(stringSerde, checkResultSerde));
-
-        log.info("=== INVENTORY TOPOLOGY (SAGA - Repartitioned - TS Fixed) LOADED OK ===");
+    private void metric(String sku, int quantity) {
+        AtomicInteger gauge = gauges.computeIfAbsent(sku, key -> meterRegistry.gauge("inventory_stock_level", Tags.of("sku", key), new AtomicInteger(quantity)));
+        if (gauge != null) gauge.set(quantity);
     }
 }

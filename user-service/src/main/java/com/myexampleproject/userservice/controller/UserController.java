@@ -15,6 +15,9 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import jakarta.validation.Valid;
+import jakarta.validation.groups.Default;
+import org.springframework.validation.annotation.Validated;
 import java.util.Map;
 
 //@Controller: Báo cho Spring biết đây là một "Bean",nó chuyên xử lý các request
@@ -30,15 +33,15 @@ public class UserController {
     // ✅ Cho phép đăng ký public (không cần token)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public UserResponse createUser(@RequestBody UserRequest userRequest) {
+    public UserResponse createUser(@Validated({Default.class, UserRequest.Creation.class}) @RequestBody UserRequest userRequest) {
         return userService.createUser(userRequest);
     }
 
     // ✅ User có thể tự cập nhật thông tin của chính mình
     @PatchMapping("/me")
-    @PreAuthorize("hasRole('USER')")
+    @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<UserResponse> updateSelf(Authentication authentication,
-                                                   @RequestBody UserRequest req) {
+                                                   @Valid @RequestBody UserRequest req) {
         Jwt jwt = (Jwt) authentication.getPrincipal();
         String keycloakId = jwt.getClaim("sub");
         return ResponseEntity.ok(userService.updateSelfUser(keycloakId, req));

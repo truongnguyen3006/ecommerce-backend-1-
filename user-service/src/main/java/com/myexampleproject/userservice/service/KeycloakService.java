@@ -7,16 +7,21 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.util.List;
+import java.time.Duration;
 import java.util.Map;
 
 @Service
+@lombok.RequiredArgsConstructor
 public class KeycloakService {
+    private final WebClient.Builder clientBuilder;
     // ✅ Inject từ application.properties
     @Value("${keycloak.server-url}")
     private String keycloakServerUrl;
@@ -32,7 +37,7 @@ public class KeycloakService {
 
 
     private WebClient getClient(String token) {
-        return WebClient.builder()
+        return clientBuilder.clone()
                 .baseUrl(keycloakServerUrl + "/admin/realms/" + keycloakRealm)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token)
@@ -40,7 +45,7 @@ public class KeycloakService {
     }
 
     private String getAdminAccessToken() {
-        WebClient tokenClient = WebClient.builder()
+        WebClient tokenClient = clientBuilder.clone()
                 .baseUrl(keycloakServerUrl + "/realms/" + keycloakRealm + "/protocol/openid-connect/token")
                 .build();
 
@@ -51,7 +56,7 @@ public class KeycloakService {
                         .with("grant_type", "client_credentials"))
                 .retrieve()
                 .bodyToMono(JsonNode.class)
-                .block();
+                .block(Duration.ofSeconds(10));
         if (response == null || response.get("access_token") == null) {
             throw new RuntimeException("Không thể lấy access token admin");
         }
@@ -70,7 +75,7 @@ public class KeycloakService {
                 .bodyValue(updates)
                 .retrieve()
                 .toBodilessEntity()
-                .block();
+                .block(Duration.ofSeconds(10));
     }
 
 //    Đổi mật khẩu Keycloak (nếu người dùng muốn đổi)
@@ -87,7 +92,7 @@ public class KeycloakService {
                 .bodyValue(passwordCreds)
                 .retrieve()
                 .toBodilessEntity()
-                .block();
+                .block(Duration.ofSeconds(10));
     }
 
     private boolean userExists(String username, String token) {
@@ -100,7 +105,7 @@ public class KeycloakService {
                 .retrieve()
                 .bodyToFlux(JsonNode.class)
                 .collectList()
-                .block();
+                .block(Duration.ofSeconds(10));
 
         return users != null && !users.isEmpty();
     }
@@ -109,7 +114,7 @@ public class KeycloakService {
         String token = getAdminAccessToken();
         WebClient client = getClient(token);
         if (userExists(req.getUsername(), token)) {
-            throw new RuntimeException("User đã tồn tại trong Keycloak");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
         }
         Map<String, Object> body = Map.of(
                 "username", req.getUsername(),
@@ -128,7 +133,7 @@ public class KeycloakService {
                     .bodyValue(body)
                     .retrieve()
                     .toBodilessEntity()
-                    .block();
+                    .block(Duration.ofSeconds(10));
 
             if (response == null || response.getHeaders().getFirst("Location") == null) {
                 throw new RuntimeException("Không nhận được phản hồi hợp lệ từ Keycloak khi tạo user");
@@ -139,7 +144,7 @@ public class KeycloakService {
             return userId;
         } catch (WebClientResponseException e) {
             if (e.getStatusCode().value() == 409) {
-                throw new RuntimeException("⚠User đã tồn tại trong Keycloak");
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
             } else {
                 throw new RuntimeException("Lỗi khi tạo user trong Keycloak: " + e.getMessage(), e);
             }
@@ -155,7 +160,7 @@ public class KeycloakService {
                     .uri("/roles/{roleName}", roleName)
                     .retrieve()
                     .bodyToMono(JsonNode.class)
-                    .block();
+                    .block(Duration.ofSeconds(10));
 
             if (role == null) {
                 throw new RuntimeException("Không tìm thấy role: " + roleName);
@@ -167,7 +172,7 @@ public class KeycloakService {
                     .bodyValue(List.of(role))
                     .retrieve()
                     .toBodilessEntity()
-                    .block();
+                    .block(Duration.ofSeconds(10));
             System.out.println("✅ Gán role '" + roleName + "' cho userId " + userId);
         }
         catch (WebClientResponseException e) {
@@ -185,7 +190,7 @@ public class KeycloakService {
                     .uri("/users/{id}", keycloakId)
                     .retrieve()
                     .toBodilessEntity()
-                    .block();
+                    .block(Duration.ofSeconds(10));
 
             System.out.println("🗑️ Đã xóa user trong Keycloak: " + keycloakId);
 
@@ -207,7 +212,7 @@ public class KeycloakService {
                 .retrieve()
                 .bodyToFlux(JsonNode.class)
                 .collectList()
-                .block();
+                .block(Duration.ofSeconds(10));
 
         if (users != null && !users.isEmpty()) {
             return users.get(0).get("id").asText();
@@ -222,14 +227,14 @@ public class KeycloakService {
 
         try {
             // Check xem role có chưa
-            client.get().uri("/roles/" + roleName).retrieve().toBodilessEntity().block();
+            client.get().uri("/roles/" + roleName).retrieve().toBodilessEntity().block(Duration.ofSeconds(10));
         } catch (WebClientResponseException.NotFound e) {
             // Nếu chưa có (404) thì tạo mới
             Map<String, String> role = Map.of("name", roleName);
-            client.post().uri("/roles").bodyValue(role).retrieve().toBodilessEntity().block();
+            client.post().uri("/roles").bodyValue(role).retrieve().toBodilessEntity().block(Duration.ofSeconds(10));
             System.out.println("⚠️ Đã tạo mới Role: " + roleName);
         } catch (Exception e) {
-            // Ignore nếu lỗi khác
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Keycloak role configuration unavailable");
         }
     }
 

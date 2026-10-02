@@ -19,10 +19,14 @@ import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.HashMap;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.Map;
 
 @RequiredArgsConstructor
+@Transactional
 @Service // Đánh dấu đây là một Bean Service
 public class UserService {
     private final UserRepository userRepository;
@@ -53,7 +57,7 @@ public class UserService {
     // ✅ HÀM MỚI: Lấy thông tin user để trả về cho API /me
     public UserResponse getUserByKeycloakId(String keycloakId) {
         User user = userRepository.findByKeycloakId(keycloakId)
-                .orElseThrow(() -> new RuntimeException("User not found with Keycloak ID: " + keycloakId));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User profile not found"));
 
         return mapToUserResponse(user);
     }
@@ -61,7 +65,7 @@ public class UserService {
     //    Người dùng tự cập nhật
     public UserResponse updateSelfUser(String keycloakId, UserRequest request) {
         User user = userRepository.findByKeycloakId(keycloakId)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy user"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
         // Cập nhật thông tin trong DB
         if (request.getFullName() != null) user.setFullName(request.getFullName());
@@ -74,8 +78,10 @@ public class UserService {
         Map<String, Object> body = new HashMap<>();
         if (request.getEmail() != null) body.put("email", request.getEmail());
         if (request.getFullName() != null) body.put("firstName", request.getFullName());
-        if (request.getPhoneNumber() != null) body.put("attributes", Map.of("phoneNumber", request.getPhoneNumber()));
-        if (request.getAddress() != null) body.put("attributes", Map.of("address", request.getAddress()));
+        Map<String,Object> attributes = new HashMap<>();
+        if (request.getPhoneNumber() != null) attributes.put("phoneNumber", request.getPhoneNumber());
+        if (request.getAddress() != null) attributes.put("address", request.getAddress());
+        if (!attributes.isEmpty()) body.put("attributes", attributes);
 
 
         keycloakService.updateUserInKeycloak(user.getKeycloakId(), body);
@@ -91,7 +97,7 @@ public class UserService {
     // Admin cập nhật người dùng
     public UserResponse updateUserByAdmin(Long id,  boolean enabled) {
         User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy user"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
         keycloakService.updateUserInKeycloak(user.getKeycloakId(), Map.of("enabled", enabled));
         user.setStatus(enabled); // 🟢 Cập nhật field mới
@@ -106,13 +112,13 @@ public class UserService {
     }
 
     public UserResponse getUserById(Long id){
-        User user = userRepository.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
+        User user = userRepository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
         return mapToUserResponse(user);
     }
 
     public void deleteUserById(Long id){
         User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
         // 1️⃣ Xóa trên Keycloak
         keycloakService.deleteUser(user.getKeycloakId());
         userRepository.deleteById(id);
@@ -148,7 +154,7 @@ public class UserService {
     public UserAddressResponse updateAddress(String keycloakId, Long id, UserAddressRequest request) {
         validateAddressRequest(request);
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy địa chỉ"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
 
         boolean makeDefault = Boolean.TRUE.equals(request.getIsDefault());
         if (makeDefault) {
@@ -166,7 +172,7 @@ public class UserService {
 
     public UserAddressResponse setDefaultAddress(String keycloakId, Long id) {
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy địa chỉ"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
         clearDefaultAddress(keycloakId);
         address.setDefault(true);
         return mapToAddressResponse(userAddressRepository.save(address));
@@ -174,7 +180,7 @@ public class UserService {
 
     public void deleteAddress(String keycloakId, Long id) {
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy địa chỉ"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
         boolean wasDefault = address.isDefault();
         userAddressRepository.delete(address);
 
@@ -201,16 +207,16 @@ public class UserService {
 
     private void validateAddressRequest(UserAddressRequest request) {
         if (request == null) {
-            throw new RuntimeException("Dữ liệu địa chỉ không hợp lệ");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid address");
         }
         if (cleanText(request.getRecipientName(), 128) == null) {
-            throw new RuntimeException("Tên người nhận là bắt buộc");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Recipient name is required");
         }
         if (cleanText(request.getRecipientPhone(), 32) == null) {
-            throw new RuntimeException("Số điện thoại là bắt buộc");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Recipient phone is required");
         }
         if (cleanText(request.getAddressLine(), 512) == null) {
-            throw new RuntimeException("Địa chỉ giao hàng là bắt buộc");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Shipping address is required");
         }
     }
 

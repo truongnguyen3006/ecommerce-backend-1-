@@ -1,6 +1,13 @@
 package com.myexampleproject.productservice.controller;
 
 import java.util.List;
+import java.math.BigDecimal;
+import jakarta.validation.Valid;
+import jakarta.validation.groups.Default;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.transaction.annotation.Transactional;
+import com.myexampleproject.productservice.dto.ProductPage;
+import com.myexampleproject.common.client.ProductCatalogClient.CatalogItem;
 
 import com.myexampleproject.common.event.ProductCacheEvent;
 import com.myexampleproject.common.event.ProductCreatedEvent;
@@ -29,13 +36,13 @@ public class ProductController {
 	
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
-	public ProductResponse createProduct(@RequestBody ProductRequest productRequest) {
+	public ProductResponse createProduct(@Validated({Default.class, ProductRequest.Creation.class}) @RequestBody ProductRequest productRequest) {
         return productService.createProduct(productRequest);
 	}
 
     @PutMapping("/{id}")
     @ResponseStatus(HttpStatus.OK)
-    public ProductResponse updateProduct(@PathVariable Long id, @RequestBody ProductRequest productRequest) {
+    public ProductResponse updateProduct(@PathVariable Long id, @Valid @RequestBody ProductRequest productRequest) {
         return productService.updateProduct(id, productRequest);
     }
 	
@@ -61,6 +68,23 @@ public class ProductController {
 
     // Trong ProductController.java
 
+    @GetMapping("/search")
+    public ProductPage search(@RequestParam(required = false) String keyword,
+                              @RequestParam(required = false) String category,
+                              @RequestParam(required = false) BigDecimal minPrice,
+                              @RequestParam(required = false) BigDecimal maxPrice,
+                              @RequestParam(required = false) String color,
+                              @RequestParam(required = false) String size,
+                              @RequestParam(defaultValue = "0") int page,
+                              @RequestParam(defaultValue = "20") int pageSize,
+                              @RequestParam(defaultValue = "id,asc") String sort) {
+        return productService.search(keyword, category, minPrice, maxPrice, color, size, page, pageSize, sort);
+    }
+
+    @GetMapping("/sku/{sku}")
+    public CatalogItem variant(@PathVariable String sku) { return productService.getVariant(sku); }
+
+    @Transactional(readOnly = true)
     @GetMapping("/admin/warm-cache")
     public String warmProductCache() {
         log.info("Starting FULL cache warm-up (Parent + Variants)...");
@@ -94,12 +118,6 @@ public class ProductController {
 
                 kafkaTemplate.send("product-cache-update-topic", variant.getSkuCode(), cacheEvent);
 
-                // --- Gửi Event cho Inventory Service ---
-                ProductCreatedEvent inventoryEvent = ProductCreatedEvent.builder()
-                        .skuCode(variant.getSkuCode())      // ✅ LẤY TỪ VARIANT
-                        .initialQuantity(1000)
-                        .build();
-                kafkaTemplate.send("product-created-topic", variant.getSkuCode(), inventoryEvent);
 
                 variantCount++;
             }

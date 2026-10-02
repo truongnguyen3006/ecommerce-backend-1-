@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import jakarta.validation.Valid;
 import java.util.Map;
 
 @RestController
@@ -26,12 +27,13 @@ public class OrderController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public Map<String, String> placeOrder(@RequestBody OrderRequest orderRequest,
+    public Map<String, String> placeOrder(@Valid @RequestBody OrderRequest orderRequest,
+                                          @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
                                           @AuthenticationPrincipal Jwt jwt) {
         String userId = extractUserId(jwt);
         log.info("Placing order for user {}", userId);
 
-        String orderNumber = orderService.placeOrder(orderRequest, userId);
+        String orderNumber = orderService.placeOrder(orderRequest, userId, idempotencyKey);
         return Map.of("orderNumber", orderNumber, "message", "Order received");
     }
 
@@ -58,7 +60,7 @@ public class OrderController {
     @PostMapping("/{orderNumber}/cancel")
     @ResponseStatus(HttpStatus.OK)
     public OrderResponse cancelOrder(@PathVariable String orderNumber,
-                                     @RequestBody(required = false) CancelOrderRequest request,
+                                     @Valid @RequestBody(required = false) CancelOrderRequest request,
                                      @AuthenticationPrincipal Jwt jwt) {
         String reason = request != null ? request.getReason() : null;
         return orderService.cancelOrder(orderNumber, extractUserId(jwt), isAdmin(jwt), reason);
@@ -66,8 +68,8 @@ public class OrderController {
 
     @GetMapping("/internal/{orderNumber}/payment-context")
     @ResponseStatus(HttpStatus.OK)
-    public OrderPaymentContextResponse getPaymentContext(@PathVariable String orderNumber) {
-        return orderService.getPaymentContext(orderNumber);
+    public OrderPaymentContextResponse getPaymentContext(@PathVariable String orderNumber, @AuthenticationPrincipal Jwt jwt) {
+        return orderService.getPaymentContext(orderNumber, extractUserId(jwt), isAdmin(jwt));
     }
 
     private String extractUserId(Jwt jwt) {

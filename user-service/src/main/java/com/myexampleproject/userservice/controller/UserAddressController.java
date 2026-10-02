@@ -10,6 +10,9 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import jakarta.validation.Valid;
+import jakarta.validation.groups.Default;
+import org.springframework.validation.annotation.Validated;
 
 @RestController
 @RequestMapping("/api/user/addresses")
@@ -26,14 +29,14 @@ public class UserAddressController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public UserAddressResponse createAddress(@AuthenticationPrincipal Jwt jwt,
-                                             @RequestBody UserAddressRequest request) {
+                                             @Valid @RequestBody UserAddressRequest request) {
         return userService.createAddress(extractKeycloakId(jwt), request);
     }
 
     @PutMapping("/{id}")
     public UserAddressResponse updateAddress(@AuthenticationPrincipal Jwt jwt,
                                              @PathVariable Long id,
-                                             @RequestBody UserAddressRequest request) {
+                                             @Valid @RequestBody UserAddressRequest request) {
         return userService.updateAddress(extractKeycloakId(jwt), id, request);
     }
 

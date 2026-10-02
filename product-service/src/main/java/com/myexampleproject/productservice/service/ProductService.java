@@ -26,6 +26,15 @@ import com.myexampleproject.productservice.repository.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+import com.myexampleproject.common.client.ProductCatalogClient.CatalogItem;
+import com.myexampleproject.productservice.dto.ProductPage;
+import com.myexampleproject.productservice.repository.ProductSpecifications;
+import com.myexampleproject.productservice.repository.ProductVariantRepository;
+import java.util.HashSet;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -33,6 +42,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ProductService {
     private final ProductRepository productRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final ProductVariantRepository variantRepository;
 
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     public void clearProductListCache() {
@@ -45,6 +55,7 @@ public class ProductService {
     @Transactional
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     public ProductResponse createProduct(ProductRequest request) {
+        validateRequest(request, true);
 
         Product product = Product.builder()
                 .name(request.getName())
@@ -85,7 +96,7 @@ public class ProductService {
             for (ProductVariantRequest vReq : request.getVariants()) {
                 ProductCreatedEvent inventoryEvent = ProductCreatedEvent.builder()
                         .skuCode(vReq.getSkuCode())
-                        .initialQuantity(vReq.getInitialQuantity())
+                        .initialQuantity(vReq.getInitialQuantity() == null ? 0 : vReq.getInitialQuantity())
                         .build();
                 kafkaTemplate.send("product-created-topic", vReq.getSkuCode(), inventoryEvent);
 
@@ -93,7 +104,7 @@ public class ProductService {
                         .skuCode(vReq.getSkuCode())
                         .name(product.getName())
                         .price(vReq.getPrice() != null ? vReq.getPrice() : product.getBasePrice())
-                        .imageUrl(vReq.getImageUrl())
+                        .imageUrl(vReq.getImageUrl() != null ? vReq.getImageUrl() : product.getImageUrl())
                         .color(vReq.getColor())
                         .size(vReq.getSize())
                         .build();
@@ -110,9 +121,10 @@ public class ProductService {
     @Transactional
     @CacheEvict(cacheNames = {"products_json_v5", "product_item_json_v5"}, allEntries = true)
     public ProductResponse updateProduct(Long id, ProductRequest request) {
+        validateRequest(request, false);
 
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
 
         // [FIX 1] Partial Update: Chỉ cập nhật nếu request có gửi dữ liệu (khác null)
         // Ngăn chặn việc mất dữ liệu khi frontend gửi update từng phần.
@@ -125,6 +137,7 @@ public class ProductService {
         // [FIX 2] Nếu danh sách variants trong request là NULL -> GIỮ NGUYÊN biến thể cũ, không xóa.
         if (request.getVariants() == null) {
             Product savedProduct = productRepository.save(product);
+            sendKafkaEvents(savedProduct);
             return mapToProductResponse(savedProduct);
         }
 
@@ -135,6 +148,7 @@ public class ProductService {
             product.setVariants(currentVariants);
         }
 
+        Set<String> oldSkus = currentVariants.stream().map(ProductVariant::getSkuCode).collect(Collectors.toSet());
         List<ProductVariantRequest> incomingVariants = request.getVariants();
         Map<String, ProductVariantRequest> requestMap = incomingVariants.stream()
                 .collect(Collectors.toMap(ProductVariantRequest::getSkuCode, v -> v));
@@ -173,6 +187,7 @@ public class ProductService {
                 requestMap.remove(sku);
             } else {
                 // DELETE: Nếu Frontend gửi danh sách biến thể nhưng thiếu SKU này -> Xóa
+                kafkaTemplate.send("product-cache-update-topic", sku, null);
                 iterator.remove();
             }
         }
@@ -205,6 +220,12 @@ public class ProductService {
         }
 
         Product savedProduct = productRepository.save(product);
+        for (ProductVariantRequest variant : request.getVariants()) {
+            if (!oldSkus.contains(variant.getSkuCode())) {
+                kafkaTemplate.send("product-created-topic", variant.getSkuCode(), new ProductCreatedEvent(variant.getSkuCode(),
+                        variant.getInitialQuantity() == null ? 0 : variant.getInitialQuantity()));
+            }
+        }
         sendKafkaEvents(savedProduct);
         return mapToProductResponse(savedProduct);
     }
@@ -223,27 +244,21 @@ public class ProductService {
                     .build();
             kafkaTemplate.send("product-cache-update-topic", v.getSkuCode(), cacheEvent);
 
-            // Chỉ gửi event tạo kho nếu cần thiết (logic này tùy nghiệp vụ, ở đây giữ nguyên)
-            // Lưu ý: Update thường không reset kho về 0, nhưng code gốc của bạn đang set 0.
-            // Nếu bạn muốn giữ kho cũ, InventoryService cần check tồn tại trước khi reset.
-            ProductCreatedEvent inventoryEvent = ProductCreatedEvent.builder()
-                    .skuCode(v.getSkuCode())
-                    .initialQuantity(0)
-                    .build();
-            kafkaTemplate.send("product-created-topic", v.getSkuCode(), inventoryEvent);
         }
     }
 
+    @Transactional(readOnly = true)
     @Cacheable(cacheNames = "products_json_v5")
     public List<ProductResponse> getAllProducts() {
         List<Product> products = productRepository.findAll();
         return products.stream().map(this::mapToProductResponse).collect(Collectors.toList());
     }
 
+    @Transactional(readOnly = true)
     @Cacheable(cacheNames = "product_item_json_v5", key = "#id")
     public ProductResponse getProductById(Long id){
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
         return mapToProductResponse(product);
     }
 
@@ -251,11 +266,63 @@ public class ProductService {
             @CacheEvict(cacheNames = "product_item_json_v5", key = "#id"),
             @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     })
+    @Transactional
     public void deleteProductById(Long id){
         if(!productRepository.existsById(id)){
-            throw new RuntimeException("Product not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
         }
+        Product product = productRepository.findById(id).orElseThrow();
+        product.getVariants().forEach(v -> kafkaTemplate.send("product-cache-update-topic", v.getSkuCode(), null));
         productRepository.deleteById(id);
+    }
+
+    private void validateRequest(ProductRequest request, boolean creation) {
+        if (request == null || (creation && (request.getName() == null || request.getBasePrice() == null
+                || request.getVariants() == null || request.getVariants().isEmpty()))
+                || (request.getName() != null && request.getName().isBlank())
+                || (request.getBasePrice() != null && request.getBasePrice().signum() < 0)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid product data");
+        }
+        Set<String> skus = new HashSet<>();
+        if (request.getVariants() != null) for (ProductVariantRequest variant : request.getVariants()) {
+            if (variant == null || variant.getSkuCode() == null || variant.getSkuCode().isBlank()
+                    || !skus.add(variant.getSkuCode()) || (variant.getPrice() != null && variant.getPrice().signum() < 0)
+                    || (variant.getInitialQuantity() != null && variant.getInitialQuantity() < 0)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid or duplicate product variant");
+            }
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public ProductPage search(String keyword, String category, BigDecimal minPrice, BigDecimal maxPrice,
+                              String color, String size, int page, int sizeLimit, String sort) {
+        if (page < 0 || sizeLimit < 1 || sizeLimit > 100 || (minPrice != null && minPrice.signum() < 0)
+                || (maxPrice != null && maxPrice.signum() < 0)
+                || (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid pagination or price range");
+        }
+        String[] parts = sort.split(",");
+        String field = parts[0].equals("price") ? "basePrice" : parts[0];
+        if (!Set.of("id", "name", "basePrice", "createdAt").contains(field) || parts.length > 2
+                || (parts.length == 2 && !parts[1].equalsIgnoreCase("asc") && !parts[1].equalsIgnoreCase("desc"))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported product sort");
+        }
+        Sort ordering = Sort.by(parts.length == 2 && parts[1].equalsIgnoreCase("desc") ? Sort.Direction.DESC : Sort.Direction.ASC, field);
+        if (!field.equals("id")) ordering = ordering.and(Sort.by("id"));
+        Page<Product> products = productRepository.findAll(ProductSpecifications.filter(keyword, category, minPrice, maxPrice, color, size),
+                PageRequest.of(page, sizeLimit, ordering));
+        return new ProductPage(products.getContent().stream().map(this::mapToProductResponse).toList(), page, sizeLimit,
+                products.getTotalElements(), products.getTotalPages());
+    }
+
+    @Transactional(readOnly = true)
+    public CatalogItem getVariant(String sku) {
+        ProductVariant v = variantRepository.findBySkuCode(sku)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product variant not found"));
+        if (Boolean.FALSE.equals(v.getIsActive())) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product variant is unavailable");
+        Product product = v.getProduct();
+        return new CatalogItem(v.getSkuCode(), product.getName(), v.getPrice() == null ? product.getBasePrice() : v.getPrice(),
+                v.getImageUrl() == null ? product.getImageUrl() : v.getImageUrl(), v.getColor(), v.getSize(), v.getIsActive());
     }
 
     private ProductResponse mapToProductResponse(Product product) {
@@ -269,7 +336,7 @@ public class ProductService {
                             .price(v.getPrice())
                             .imageUrl(v.getImageUrl())
                             .isActive(v.getIsActive())
-                            .galleryImages(v.getImages().stream()
+                            .galleryImages((v.getImages() == null ? java.util.Collections.<ProductImage>emptyList() : v.getImages()).stream()
                                     .map(ProductImage::getImageUrl)
                                     .collect(Collectors.toList()))
                             .build())

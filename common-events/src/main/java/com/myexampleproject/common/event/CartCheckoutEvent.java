@@ -14,5 +14,7 @@ import java.util.List;
 public class CartCheckoutEvent {
     private String userId;
     private List<CartLineItem> items;
+    private String checkoutId;
+    public CartCheckoutEvent(String userId, List<CartLineItem> items) { this(userId, items, null); }
 }
 

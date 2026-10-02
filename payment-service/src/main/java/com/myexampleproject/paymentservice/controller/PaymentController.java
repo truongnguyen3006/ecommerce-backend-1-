@@ -11,6 +11,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import jakarta.validation.Valid;
 import java.util.stream.Collectors;
 
 @RestController
@@ -22,15 +23,15 @@ public class PaymentController {
 
     @PostMapping("/vnpay/create")
     public PaymentTransactionResponse createVnpayPayment(@AuthenticationPrincipal Jwt jwt,
-                                                         @RequestBody CreateVnpayPaymentRequest request,
+                                                         @Valid @RequestBody CreateVnpayPaymentRequest request,
                                                          HttpServletRequest servletRequest) {
-        return paymentService.createVnpayPayment(jwt != null ? jwt.getSubject() : null, request, servletRequest);
+        return paymentService.createVnpayPayment(jwt != null ? jwt.getSubject() : null, jwt != null ? jwt.getTokenValue() : null, request, servletRequest);
     }
 
     @GetMapping("/order/{orderNumber}")
     public PaymentTransactionResponse getByOrderNumber(@AuthenticationPrincipal Jwt jwt,
                                                        @PathVariable String orderNumber) {
-        return paymentService.getPaymentByOrderNumber(jwt != null ? jwt.getSubject() : null, orderNumber);
+        return paymentService.getPaymentByOrderNumber(jwt != null ? jwt.getSubject() : null, jwt != null ? jwt.getTokenValue() : null, orderNumber);
     }
 
     @GetMapping("/vnpay/return")

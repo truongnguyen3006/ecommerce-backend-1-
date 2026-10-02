@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name="app.seed-admin.enabled", havingValue="true", matchIfMissing=true)
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -16,6 +17,9 @@ public class UserSeeder implements CommandLineRunner {
 
     private final KeycloakService keycloakService;
     private final UserRepository userRepository;
+
+    @org.springframework.beans.factory.annotation.Value("${app.seed-admin.password:admin123456@}")
+    private String adminPassword;
 
     @Override
     public void run(String... args) {
@@ -25,7 +29,6 @@ public class UserSeeder implements CommandLineRunner {
 
     private void seedAdminUser() {
         String adminUsername = "admin";
-        String adminPassword = "admin123456@"; // Mật khẩu mặc định
         String adminEmail = "admin@example.com";
         String roleAdmin = "admin";
         String roleUser = "user";
