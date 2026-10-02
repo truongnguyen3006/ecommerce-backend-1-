@@ -1,0 +1,194 @@
+services:
+  redis:
+    image: redis:7-alpine # Dùng image alpine cho nhẹ
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - micro_net
+
+  ## Keycloak Config with Mysql database
+  keycloak-mysql:
+    container_name: keycloak-mysql
+    image: mysql:8
+    volumes:
+      - keycloak-db-data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: keycloak
+      MYSQL_USER: keycloak
+      MYSQL_PASSWORD: password
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -proot" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - micro_net
+
+  keycloak:
+    container_name: keycloak
+    image: quay.io/keycloak/keycloak:18.0.0
+    command: [ "start-dev", "--import-realm", "--features=scripts" ]
+
+    environment:
+      KC_DB: mysql
+      KC_DB_URL_HOST: keycloak-mysql
+      KC_DB_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: 8085
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_URL: http://localhost:8085
+      KC_HOSTNAME_STRICT: "false"
+
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./keycloak-data:/opt/keycloak/data/import
+    depends_on:
+      keycloak-mysql:
+        condition: service_healthy
+    networks:
+      - micro_net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-topics --bootstrap-server kafka:29092 --list || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - micro_net
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: schema-registry
+    ports:
+      - "8081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:29092"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+    networks:
+      - micro_net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090" # Cổng của Prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml # Mount file config
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - micro_net
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3000:3000" # Cổng của Grafana
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      # 1. Nạp datasource (có UID df6nugk7yzqpsc)
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      # 2. Nạp cấu hình provider
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      # 3. Nạp CẢ 2 FILE JSON vào trong container
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - micro_net
+
+  zipkin:
+    image: openzipkin/zipkin:latest
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - micro_net
+
+    # Service Nginx
+  nginx:
+    image: nginx:latest
+    container_name: nginx-lb
+    ports:
+      - "8000:80" # Mở cổng 80 ra ngoài
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro # Mount file config vào
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Bắt buộc cho Linux (Windows Docker Desktop tự có, nhưng thêm vào cho chắc)
+    networks:
+      - micro_net
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    environment:
+      PMA_HOST: mysql-business   # Tên service MySQL của bạn
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: root         # Pass bạn đã cài
+    ports:
+      - "8888:80"                # Truy cập qua cổng 8888 để không đụng cổng 80 của Nginx
+    networks:
+      - micro_net
+    depends_on:
+      - mysql-business
+
+  # MySQL chứa dữ liệu nghiệp vụ (Product, Order, User)
+  mysql-business:
+    image: mysql:8
+    container_name: mysql-business
+    ports:
+      - "3306:3306" # Mở cổng 3306 ra ngoài để Spring Boot kết nối vào
+    environment:
+      MYSQL_ROOT_PASSWORD: root  # Pass giống trong application.properties của bạn
+    volumes:
+      # Mount dữ liệu khởi tạo (Chạy 1 lần đầu tiên)
+      - ./mysql-init:/docker-entrypoint-initdb.d
+      # Mount volume để lưu dữ liệu bền vững (nếu muốn)
+      - business-db-data-v2:/var/lib/mysql
+    networks:
+      - micro_net
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# --- KHAI BÁO TẤT CẢ CÁC NAMED VOLUMES ---
+volumes:
+  keycloak-db-data:
+  business-db-data-v2:
+#Định nghĩa network
+networks:
+  micro_net:
+    driver: bridge
