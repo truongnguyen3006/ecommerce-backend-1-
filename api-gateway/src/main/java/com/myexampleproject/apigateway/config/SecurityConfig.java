@@ -1,86 +1,66 @@
 package com.myexampleproject.apigateway.config;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtValidators;
-import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
-import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.*;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.reactive.*;
 import reactor.core.publisher.Mono;
-
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
 
 @Configuration
 @EnableWebFluxSecurity
 public class SecurityConfig {
-    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
-    private String issuerUri;
-
-    private final Map<String, Mono<Jwt>> tokenCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedDecoder> jwkDecoderCache = new ConcurrentHashMap<>();
     @Bean
-    public ReactiveJwtDecoder reactiveJwtDecoder() {
-        return token -> {
-            String jwkUri = issuerUri + "/protocol/openid-connect/certs";
-            ReactiveJwtDecoder decoder = getCachedDecoder(jwkUri);
-            return tokenCache.computeIfAbsent(token,
-                    t -> Mono.defer(() -> decoder.decode(t))
-                            .cache(Duration.ofMinutes(10))
-            );
-        };
+    public ReactiveJwtDecoder reactiveJwtDecoder(@Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuerUri) {
+        NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder.withJwkSetUri(issuerUri + "/protocol/openid-connect/certs").build();
+        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(issuerUri));
+        // Cache signing keys in Nimbus, never cache a successful token validation.
+        return decoder;
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource(@Value("${app.cors.allowed-origins}") String origins) {
+        List<String> allowed = Arrays.stream(origins.split(",")).map(String::trim).filter(s -> !s.isBlank()).toList();
+        if (allowed.contains("*")) throw new IllegalArgumentException("CORS requires explicit origins");
+        CorsConfiguration config = new CorsConfiguration();
+        config.setAllowedOrigins(allowed);
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
+        config.setAllowCredentials(true);
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();source.registerCorsConfiguration("/**", config);
+        return source;
     }
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
-        http.csrf(ServerHttpSecurity.CsrfSpec::disable)
+        http.csrf(ServerHttpSecurity.CsrfSpec::disable).cors(cors -> {})
                 .authorizeExchange(ex -> ex
-                        .pathMatchers("/eureka/**").permitAll()
-                        .pathMatchers("/auth/**").permitAll()
-                        .pathMatchers("/actuator/**").permitAll()
-                        .pathMatchers(HttpMethod.GET, "/api/product/**").permitAll()
-                        .pathMatchers(HttpMethod.GET, "/api/inventory/**").permitAll()
-                        .pathMatchers(HttpMethod.GET, "/api/payment/vnpay/return", "/api/payment/vnpay/ipn").permitAll()
-                        .pathMatchers(HttpMethod.POST, "/api/order").authenticated()
+                        .pathMatchers("/api/order/internal/**", "/eureka/**").denyAll()
+                        .pathMatchers("/auth/**", "/ws/**").permitAll()
+                        .pathMatchers(HttpMethod.POST, "/api/user").permitAll()
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        .pathMatchers("/actuator/**", "/api/product/admin/**", "/api/order/admin", "/api/order/admin/**", "/api/admin/**", "/api/user/admin/**").hasRole("ADMIN")
+                        .pathMatchers(HttpMethod.GET, "/api/product/**", "/api/inventory/**", "/api/payment/vnpay/return", "/api/payment/vnpay/ipn").permitAll()
+                        .pathMatchers("/api/product/**", "/api/inventory/**").hasRole("ADMIN")
+                        .pathMatchers("/api/cart/**", "/api/order/**", "/api/payment/**", "/api/user/me", "/api/user/addresses", "/api/user/addresses/**").hasAnyRole("USER", "ADMIN")
+                        .pathMatchers("/api/user/**").hasRole("ADMIN")
                         .anyExchange().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(token -> {
+                    Object claim = token.getClaim("realm_access");
+                    List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+                    if (claim instanceof Map<?, ?> realm && realm.get("roles") instanceof Collection<?> roles) {
+                        roles.stream().filter(String.class::isInstance).map(String.class::cast)
+                                .map(r -> new SimpleGrantedAuthority("ROLE_" + r.toUpperCase(Locale.ROOT))).forEach(authorities::add);
+                    }
+                    return Mono.just(new JwtAuthenticationToken(token, authorities));
+                })));
         return http.build();
-    }
-
-    // ✅ Cache JWK decoders (manual version of `.cache(Duration)`)
-    private ReactiveJwtDecoder getCachedDecoder(String jwkUri) {
-        CachedDecoder cached = jwkDecoderCache.get(jwkUri);
-        if (cached != null && cached.isValid()) {
-            return cached.decoder;
-        }
-
-        NimbusReactiveJwtDecoder newDecoder = NimbusReactiveJwtDecoder.withJwkSetUri(jwkUri).build();
-        newDecoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(issuerUri));
-        jwkDecoderCache.put(jwkUri, new CachedDecoder(newDecoder, Instant.now()));
-        return newDecoder;
-    }
-
-    // ✅ Class phụ để giữ decoder và timestamp
-    private static class CachedDecoder {
-        private final ReactiveJwtDecoder decoder;
-        private final Instant createdAt;
-
-        CachedDecoder(ReactiveJwtDecoder decoder, Instant createdAt) {
-            this.decoder = decoder;
-            this.createdAt = createdAt;
-        }
-
-        boolean isValid() {
-            // Cache JWK 1 tiếng
-            return Duration.between(createdAt, Instant.now()).compareTo(Duration.ofHours(1)) < 0;
-        }
     }
 }

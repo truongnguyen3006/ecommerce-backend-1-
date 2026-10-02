@@ -1,38 +1,34 @@
 package com.myexampleproject.productservice.config;
 
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import com.myexampleproject.common.security.KeycloakRoles;
+import com.myexampleproject.common.security.ApiSecurityErrors;
+import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
-
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http
-                .csrf(csrf -> csrf.disable())
-
-                // 2. Cấu hình tùy chỉnh
+        ApiSecurityErrors errors = new ApiSecurityErrors();
+        http.csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        // Cho phép bất kỳ ai cũng có thể XEM (GET) sản phẩm
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
+                        .requestMatchers("/actuator/**").hasRole("ADMIN")
+                        .requestMatchers("/api/product/admin/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/product/**").permitAll()
-                        // Bắt buộc tất cả các request khác (POST, DELETE) phải xác thực
-                        // Các API khác (Tạo/Sửa/Xóa) vẫn yêu cầu đăng nhập (ADMIN)
-                        .requestMatchers(HttpMethod.POST, "/api/product").authenticated()
-                        .requestMatchers(HttpMethod.DELETE, "/api/product/**").authenticated()
-                        .anyRequest().authenticated()
-                )
-
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
-                .sessionManagement(session -> session
-                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS));
-
+                        .requestMatchers("/api/product/**").hasRole("ADMIN")
+                        .anyRequest().authenticated())
+                .exceptionHandling(ex -> ex.authenticationEntryPoint(errors).accessDeniedHandler(errors))
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(KeycloakRoles.converter()))
+                        .authenticationEntryPoint(errors).accessDeniedHandler(errors))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
         return http.build();
     }
 }
