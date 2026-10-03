@@ -9,7 +9,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 //đánh dấu đây là một ứng dụng Spring Boot,
 // cho phép tự động cấu hình và quét các thành phần trong dự án.
 @SpringBootApplication
-@Import({ GlobalExceptionHandler.class })
+@Import({ com.myexampleproject.common.health.ProductionDependenciesConfiguration.class, GlobalExceptionHandler.class })
 @EnableAsync
 public class CartServiceApplication {
     public static void main(String[] args) {

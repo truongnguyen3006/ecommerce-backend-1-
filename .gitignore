@@ -71,3 +71,8 @@ logs/
 
 
 Thumbs.db
+!.env.production.example
+deploy/keycloak/runtime/
+backups/
+
+**/__pycache__/

@@ -46,6 +46,7 @@ public class SecurityConfig { // <<--- KHÔNG KẾ THỪA TỪ LỚP NÀO CẢ
         http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().authenticated() // Tất cả request đều phải xác thực
                 )
                 .httpBasic(Customizer.withDefaults()); // Bật xác thực HTTP Basic

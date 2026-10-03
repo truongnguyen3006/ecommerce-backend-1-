@@ -26,6 +26,9 @@ public class KafkaStreamsConfig {
     @Value("${server.port}")
     private String serverPort;
 
+    @Value("${spring.kafka.streams.properties.application.server}")
+    private String applicationServer;
+
     @Value("${spring.kafka.streams.properties.application.id}")
     private String applicationId;
 
@@ -57,7 +60,7 @@ public class KafkaStreamsConfig {
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, applicationId);
 
         // REQUIRED FOR INTERACTIVE QUERIES
-        props.put(StreamsConfig.APPLICATION_SERVER_CONFIG, "localhost:" + serverPort);
+        props.put(StreamsConfig.APPLICATION_SERVER_CONFIG, applicationServer);
 
         // STATE DIR FROM PROPERTIES
         props.put(StreamsConfig.STATE_DIR_CONFIG, stateDir);

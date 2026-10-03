@@ -25,6 +25,9 @@ import java.util.NoSuchElementException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    @org.springframework.beans.factory.annotation.Value("${app.errors.log-stacktraces:true}")
+    private boolean logStacktraces = true;
+
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(ResponseStatusException.class)
@@ -84,9 +87,15 @@ public class GlobalExceptionHandler {
         return unexpected(ex, request);
     }
 
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ErrorResponse> uploadTooLarge(Exception ex, HttpServletRequest request) {
+        return response(413, "UPLOAD_TOO_LARGE", "Upload exceeds supported size", request);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> unexpected(Exception ex, HttpServletRequest request) {
-        log.error("Request failed: {}", request.getRequestURI(), ex);
+        if (logStacktraces) log.error("Request failed: {}", request.getRequestURI(), ex);
+        else log.error("Request failed path={} exception={}", request.getRequestURI(), ex.getClass().getSimpleName());
         return response(500, "INTERNAL_SERVER_ERROR", "An unexpected server error occurred", request);
     }
 

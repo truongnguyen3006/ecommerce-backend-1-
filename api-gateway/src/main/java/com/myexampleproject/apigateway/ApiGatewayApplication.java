@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 //đánh dấu đây là một ứng dụng Spring Boot,
 // cho phép tự động cấu hình và quét các thành phần trong dự án.
+@org.springframework.context.annotation.Import(com.myexampleproject.common.health.ProductionDependenciesConfiguration.class)
 @SpringBootApplication
 public class ApiGatewayApplication {
     public static void main(String[] args) {

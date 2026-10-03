@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Import;
 
 
 @SpringBootApplication
-@Import({ GlobalExceptionHandler.class })
+@Import({ com.myexampleproject.common.health.ProductionDependenciesConfiguration.class, GlobalExceptionHandler.class })
 @Slf4j
 public class NotificationServiceApplication {
 

@@ -57,6 +57,11 @@ public class CloudinaryImageService {
         if (files == null || files.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Chưa có file ảnh nào được gửi lên");
         }
+        if (files.size() > 20 || files.stream().mapToLong(MultipartFile::getSize).sum() > 48L * 1024 * 1024) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Upload exceeds supported size");
+        }
+        // Validate the whole batch before the first external upload.
+        files.forEach(this::validateImage);
         List<CloudinaryUploadResponse> results = new ArrayList<>();
         for (MultipartFile file : files) {
             if (file != null && !file.isEmpty()) {
@@ -86,6 +91,9 @@ public class CloudinaryImageService {
     private void validateImage(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File ảnh không hợp lệ hoặc đang rỗng");
+        }
+        if (file.getSize() > 10L * 1024 * 1024) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Upload exceeds supported size");
         }
         String contentType = file.getContentType();
         if (!StringUtils.hasText(contentType) || !contentType.toLowerCase().startsWith("image/")) {

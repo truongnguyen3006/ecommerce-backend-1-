@@ -35,6 +35,7 @@
         <maven.compiler.target>24</maven.compiler.target>
         <spring-cloud.version>2025.0.0</spring-cloud.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.build.outputTimestamp>2026-10-03T00:00:00Z</project.build.outputTimestamp>
         <image.tag>latest</image.tag>
     </properties>
 

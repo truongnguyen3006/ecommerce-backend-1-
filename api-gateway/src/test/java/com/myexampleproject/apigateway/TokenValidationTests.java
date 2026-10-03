@@ -33,8 +33,11 @@ class TokenValidationTests {
                     new JWTClaimsSet.Builder().issuer(issuer).subject("A").issueTime(Date.from(now.minusSeconds(5)))
                             .expirationTime(Date.from(now.plusSeconds(300))).build());
             signed.sign(new RSASSASigner(key));String token=signed.serialize();
-            ReactiveJwtDecoder decoder=new SecurityConfig().reactiveJwtDecoder(issuer);
+            ReactiveJwtDecoder decoder=new SecurityConfig().reactiveJwtDecoder(issuer, "");
             assertThat(decoder.decode(token).block(Duration.ofSeconds(5)).getSubject()).isEqualTo("A");
+            // Internal transport for JWKs must never change the public issuer validator.
+            ReactiveJwtDecoder wrongIssuer = new SecurityConfig().reactiveJwtDecoder("https://public-issuer.test/realm/test", issuer + "/protocol/openid-connect/certs");
+            assertThatThrownBy(() -> wrongIssuer.decode(token).block(Duration.ofSeconds(5))).isInstanceOf(JwtValidationException.class);
             JwtTimestampValidator time=new JwtTimestampValidator(Duration.ZERO);
             time.setClock(Clock.fixed(now.plusSeconds(600),ZoneOffset.UTC));
             ((NimbusReactiveJwtDecoder)decoder).setJwtValidator(new DelegatingOAuth2TokenValidator<>(time,new JwtIssuerValidator(issuer)));

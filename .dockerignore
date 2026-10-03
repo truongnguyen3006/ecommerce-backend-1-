@@ -1,0 +1,14 @@
+**/target
+.git
+.idea
+.env
+.env.*
+**/*.log
+**/.rsync-tmp
+backups
+data
+logs
+keycloak-data
+mysql-init
+deploy/keycloak/runtime
+PROJECT1_PRODUCTION_READY_FINAL_REPORT.md
