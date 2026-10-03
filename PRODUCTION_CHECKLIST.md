@@ -5,7 +5,7 @@ Source/build checks do not certify a live deployment. Record the evidence and ow
 ## Required before first public deployment
 
 - [ ] Pin matching backend/frontend commits and immutable image digests; run both CIs and all 12 image builds on an accessible Docker host. Inspect SBOMs and scan images/Java dependencies; triage the remaining frontend development-tool advisories.
-- [ ] Resolve the runtime support decision: required Temurin 24.0.2 is EOSL. Review the 29 backend coordinate/version metadata matches with complete SCA and reachability evidence; preserve the private health/prometheus-only Gateway management exposure. The current source validation is not dependency security clearance.
+- [ ] Record compatibility evidence for the Java 24 build/target running on the pinned maintained Java 25 LTS JRE; keep the required EOSL Java 24 build tooling isolated and plan its future lifecycle. Review the 29 backend coordinate/version metadata matches with complete SCA and reachability evidence; preserve private health/prometheus-only Gateway management exposure. Passing source/runtime checks is not dependency security clearance.
 - [ ] Rehearse the complete Compose startup/readiness/smoke flow on a disposable project without deleting existing volumes. Verify every service resolves container DNS and has the correct profile, private management port and issuer.
 - [ ] Generate real unique secrets; keep protected `.env.production` outside Git/images/logs. Validate variables and GHCR package/pull permissions.
 - [ ] Configure application/auth DNS and valid HTTPS certificates on the trusted same-host TLS edge. Match 50 MiB ingress body limit, Upgrade/forwarding headers and callback paths. Confirm all infrastructure/admin/metrics ports remain private.
@@ -29,4 +29,4 @@ Source/build checks do not certify a live deployment. Record the evidence and ow
 
 ## Current verification boundary
 
-Java 24 backend and frontend source suites were run during this task; consult `PROJECT1_PRODUCTION_READY_FINAL_REPORT.md` for exact current commands/results. Compose model, script syntax and configuration guards were checked. Docker daemon access, live MySQL/Redis/Kafka/Keycloak, external Cloudinary/VNPay, real TLS, backup/restore and public deployment were not available here. Local historical benchmarks do not substitute for these checks.
+Java 24 backend and frontend source suites were run during this task; consult `PROJECT1_PRODUCTION_READY_FINAL_REPORT.md` for exact current commands/results. Compose model, script syntax and configuration guards were checked. The local Docker daemon was unavailable, so image builds and disposable fresh-stack/SQL-dump checks run on GitHub CI; the final report records their actual results. Owner-data/realm adoption, coordinated restore, external Cloudinary/VNPay, real TLS and public deployment remain separate verification gates. Local historical benchmarks do not substitute for these checks.

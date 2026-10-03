@@ -9,7 +9,8 @@ COPY . .
 # CI runs clean verify first. Package only the selected reactor and its shared modules.
 RUN --mount=type=cache,target=/root/.m2     case "$SERVICE" in api-gateway|discovery-server|product-service|inventory-service|cart-service|order-service|payment-service|user-service|notification-service) ;; *) exit 2 ;; esac     && mvn -B -ntp -pl "$SERVICE" -am -DskipTests package     && cp "$SERVICE/target/$SERVICE-1.0-SNAPSHOT.jar" /app.jar
 
-FROM eclipse-temurin:24.0.2_12-jre-noble@sha256:b416d02335e702b0403ff280de9475a3348e29382285969c9d4e17862ce632e7
+# Compile/test with the required Java 24; run its bytecode on maintained Java 25 LTS.
+FROM eclipse-temurin:25.0.4.1_1-jre-noble@sha256:398f810215757dc1926390014272579fb0e57c41ef1c8aa4f64ae761613a168b
 RUN apt-get update && apt-get install -y --no-install-recommends curl     && rm -rf /var/lib/apt/lists/*     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home app     && mkdir -p /app/data/kafka-streams && chown -R app:app /app
 WORKDIR /app
 COPY --from=build --chown=app:app /app.jar /app/app.jar

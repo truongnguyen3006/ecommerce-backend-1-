@@ -732,6 +732,9 @@ services:
     environment:
       STORAGE_TYPE: mem
       JAVA_OPTS: -Xms128m -Xmx512m
+      # Vendor probe otherwise uses hostname -i, which returns both network IPs.
+      HEALTHCHECK_IP: 127.0.0.1
+      HEALTHCHECK_PORT: '9411'
     networks:
     - application
     - monitoring

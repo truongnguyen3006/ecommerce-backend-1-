@@ -24,7 +24,7 @@ RESTORE_ISOLATED_DATABASE_ACK=YES scripts/restore-mysql.sh mysql /secure/backups
 RESTORE_ISOLATED_DATABASE_ACK=YES scripts/restore-mysql.sh keycloak-db /secure/backups/keycloak-before-release.sql
 ```
 
-The acknowledgement is a guard against accidental overwrite; the script cannot independently prove that the target is isolated. Choose `PRODUCTION_ENV_FILE`/`COMPOSE_PROJECT_NAME` for the replacement stack first. Confirm database server/version and the SHA256 record, then verify schema history, constraints, product/SKU counts, owner identities, order totals/statuses, payment receipts/unique refs and outbox counts. Start the pinned services with Flyway validation. Do not import a dump into an active production DB. Dump/restore execution was not live-tested here because Docker is unavailable.
+The acknowledgement is a guard against accidental overwrite; the script cannot independently prove that the target is isolated. Choose `PRODUCTION_ENV_FILE`/`COMPOSE_PROJECT_NAME` for the replacement stack first. Confirm database server/version and the SHA256 record, then verify schema history, constraints, product/SKU counts, owner identities, order totals/statuses, payment receipts/unique refs and outbox counts. Start the pinned services with Flyway validation. Do not import a dump into an active production DB. CI can exercise the dump scripts on disposable fresh databases after stopping writers; consult the final report for actual execution evidence. No owner-data restore or coordinated disaster-recovery success is implied.
 
 ## Redis
 
