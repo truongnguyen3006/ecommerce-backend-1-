@@ -9,7 +9,7 @@ class MigrationTests {
     @Test void additiveMigrationsCoverFreshSchemaAndCanBeRepeated() throws Exception {
         String url="jdbc:h2:mem:migration_"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
         Flyway flyway=Flyway.configure().dataSource(url,"sa","").locations("classpath:db/migration").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         Configuration configuration=new Configuration();
         configuration.setProperty("hibernate.connection.url",url);

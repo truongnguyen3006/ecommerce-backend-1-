@@ -39,7 +39,7 @@ class OrderOutboxTransactionTests {
     @Autowired OrderService service;
     @Autowired OrderRepository repository;
     @BeforeEach void setup() {
-        repository.deleteAll();jdbc.update("DELETE FROM outbox_event");
+        repository.deleteAll();jdbc.update("DELETE FROM outbox_event");jdbc.update("DELETE FROM workflow_dead_letter");
         Order order=new Order();order.setOrderNumber("TX-ORDER");order.setUserId("OWNER");order.setStatus("VALIDATED");order.setPaymentMethod("COD");order.setTotalPrice(BigDecimal.TEN);
         OrderLineItems item=new OrderLineItems();item.setOrder(order);item.setSkuCode("SKU");item.setQuantity(1);item.setPrice(BigDecimal.TEN);
         order.setOrderLineItemsList(new ArrayList<>(List.of(item)));repository.saveAndFlush(order);
@@ -70,12 +70,35 @@ class OrderOutboxTransactionTests {
         assertThat(repository.findByOrderNumber("TX-ORDER").orElseThrow().getPaymentAttemptId()).isEqualTo("REF");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event",Integer.class)).isZero();
     }
+
+    @Test void inventoryProofAndCompletionIntentRollbackAndRetryTogether() {
+        tx.executeWithoutResult(t -> {Order o=repository.findByOrderNumberForUpdate("TX-ORDER").orElseThrow();o.setStatus("PENDING");repository.save(o);});
+        var result=new org.apache.kafka.clients.consumer.ConsumerRecord<String,Object>("inventory-check-result-topic",0,1,"TX-ORDER",new InventoryCheckResult("TX-ORDER",new com.myexampleproject.common.dto.OrderLineItemRequest("SKU",1),true,null));
+        assertThatThrownBy(() -> tx.executeWithoutResult(t -> {service.handleInventoryCheckResult(List.of(result));throw new IllegalStateException("SQL abort");})).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT inventory_outcome FROM t_orders_line_items",Boolean.class)).isNull();
+        assertThat(repository.findByOrderNumber("TX-ORDER").orElseThrow().getStatus()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event",Integer.class)).isZero();
+        service.handleInventoryCheckResult(List.of(result));service.handleInventoryCheckResult(List.of(result));
+        assertThat(jdbc.queryForObject("SELECT inventory_outcome FROM t_orders_line_items",Boolean.class)).isTrue();
+        assertThat(repository.findByOrderNumber("TX-ORDER").orElseThrow().getStatus()).isEqualTo("VALIDATED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event WHERE topic='order-validated-topic'",Integer.class)).isEqualTo(1);
+    }
+    @Test void deadLetterRecordIsDurableIdempotentAndRollsBackWithInvestigation() {
+        var record=new org.apache.kafka.clients.consumer.ConsumerRecord<String,Object>("online-payment-received-topic.DLT",0,19,"TX-ORDER",new OnlinePaymentReceivedEvent("TX-ORDER","REF",BigDecimal.TEN));
+        assertThatThrownBy(() -> tx.executeWithoutResult(t -> {service.recordDeadLetters(List.of(record));throw new IllegalStateException("SQL abort");})).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_dead_letter",Integer.class)).isZero();
+        service.recordDeadLetters(List.of(record));service.recordDeadLetters(List.of(record));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_dead_letter",Integer.class)).isEqualTo(1);
+        assertThat(repository.findByOrderNumber("TX-ORDER").orElseThrow().isWorkflowInvestigationRequired()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event",Integer.class)).isZero();
+    }
     @Configuration(proxyBeanMethods=false) @EnableAutoConfiguration(exclude=org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration.class)
     @EntityScan(basePackages={"com.myexampleproject.orderservice.model","com.myexampleproject.common.outbox"})
     @EnableJpaRepositories(basePackageClasses=OrderRepository.class)
     static class Config {
         @Bean ObjectMapper mapper() {return new ObjectMapper().findAndRegisterModules();}
         @Bean JdbcOutbox outbox(JdbcTemplate jdbc,ObjectMapper mapper) {return new JdbcOutbox(jdbc,mapper,Clock.systemUTC());}
+        @Bean com.myexampleproject.orderservice.service.WorkflowDeadLetters deadLetters(JdbcTemplate jdbc) {return new com.myexampleproject.orderservice.service.WorkflowDeadLetters(jdbc);}
         @Bean MeterRegistry metrics() {return new SimpleMeterRegistry();}
         @Bean RedisTemplate<String,Object> redis() {return mock(RedisTemplate.class);}
         @Bean ProductCatalogClient catalog() {return mock(ProductCatalogClient.class);}

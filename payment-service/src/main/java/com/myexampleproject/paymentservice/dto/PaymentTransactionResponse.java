@@ -20,4 +20,6 @@ public class PaymentTransactionResponse {
     private String txnRef;
     private String gatewayMessage;
     private boolean providerSuccessReceived;
+    private java.time.LocalDateTime expiresAt;
+    private boolean retryAvailable;
 }

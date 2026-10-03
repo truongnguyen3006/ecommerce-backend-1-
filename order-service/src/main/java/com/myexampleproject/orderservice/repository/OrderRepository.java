@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.Optional;
 
 public interface OrderRepository extends JpaRepository<Order, Long> {
+    @Query("SELECT o.orderNumber FROM Order o WHERE o.status IN ('PENDING','VALIDATED') AND o.workflowInvestigationRequired = false AND o.orderDate < :cutoff AND (o.recoveryNextAt IS NULL OR o.recoveryNextAt <= :now) ORDER BY o.orderDate")
+    List<String> findRecoveryCandidates(@Param("cutoff") java.time.LocalDateTime cutoff,
+            @Param("now") java.time.LocalDateTime now, org.springframework.data.domain.Pageable page);
     Optional<Order> findByOrderNumber(String orderNumber);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

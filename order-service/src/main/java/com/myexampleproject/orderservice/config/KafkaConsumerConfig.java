@@ -90,6 +90,19 @@ public class KafkaConsumerConfig {
 
     // --- ObjectMapper dùng chung ---
     @Bean
+    public ConcurrentKafkaListenerContainerFactory<String,Object> workflowDeadLetterKafkaListenerContainerFactory() {
+        var factory = new ConcurrentKafkaListenerContainerFactory<String,Object>();
+        factory.setConsumerFactory(genericConsumerFactory());
+        factory.setBatchListener(true);
+        factory.setConcurrency(1);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
+        factory.getContainerProperties().setSyncCommits(true);
+        // Keep an unrecordable DLT in Kafka; stop for investigation instead of producing DLT.DLT forever.
+        factory.setCommonErrorHandler(new org.springframework.kafka.listener.CommonContainerStoppingErrorHandler());
+        return factory;
+    }
+
+    @Bean
     public ObjectMapper objectMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);

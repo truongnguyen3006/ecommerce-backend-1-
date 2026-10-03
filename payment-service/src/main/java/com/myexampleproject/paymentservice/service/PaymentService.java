@@ -3,6 +3,7 @@ package com.myexampleproject.paymentservice.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myexampleproject.common.event.OrderValidatedEvent;
 import com.myexampleproject.common.event.PaymentFailedEvent;
+import com.myexampleproject.common.event.PaymentInvestigationEvent;
 import com.myexampleproject.common.event.PaymentProcessedEvent;
 import com.myexampleproject.paymentservice.config.VNPayConfig;
 import com.myexampleproject.paymentservice.dto.CreateVnpayPaymentRequest;
@@ -108,6 +109,12 @@ public class PaymentService {
         OrderPaymentContextResponse context = fetchOrderContext(request.getOrderNumber(), bearerToken);
         validatePaymentRequester(requesterUserId, context);
 
+        Optional<PaymentTransaction> existingOpt = paymentTransactionRepository.findByOrderNumberForUpdate(context.getOrderNumber());
+        PaymentTransaction transaction = existingOpt.orElseGet(PaymentTransaction::new);
+        if (existingOpt.isPresent()) {
+            expireAttempt(transaction, LocalDateTime.now());
+            if (!"PENDING".equals(transaction.getStatus())) return mapToResponse(transaction);
+        }
         if (!"VNPAY".equalsIgnoreCase(context.getPaymentMethod())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Đơn hàng này không sử dụng phương thức thanh toán VNPAY");
         }
@@ -120,12 +127,6 @@ public class PaymentService {
         try { context.getTotalPrice().multiply(BigDecimal.valueOf(100)).toBigIntegerExact(); }
         catch (ArithmeticException ex) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Order amount has unsupported precision"); }
 
-        Optional<PaymentTransaction> existingOpt = paymentTransactionRepository.findByOrderNumberForUpdate(context.getOrderNumber());
-        PaymentTransaction transaction = existingOpt.orElseGet(PaymentTransaction::new);
-        if (existingOpt.isPresent() && !"PENDING".equals(transaction.getStatus())) {
-            if (transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus())) return mapToResponse(transaction);
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Payment attempt is already terminal");
-        }
         transaction.setOrderNumber(context.getOrderNumber());
         transaction.setProvider("VNPAY");
         transaction.setStatus("PENDING");
@@ -136,6 +137,7 @@ public class PaymentService {
         beginOrderPayment(context.getOrderNumber(), transaction.getTxnRef(), bearerToken);
         if (transaction.getPaymentUrl() != null && !transaction.getPaymentUrl().isBlank()) return mapToResponse(transaction);
 
+        transaction.setExpiresAt(LocalDateTime.now().plusMinutes(15));
         Map<String, String> params = buildVnpayParams(transaction, servletRequest);
         String hashData = VNPayUtil.buildHashData(params);
         String secureHash = VNPayUtil.hmacSHA512(vnPayConfig.getSecretKey(), hashData);
@@ -148,14 +150,15 @@ public class PaymentService {
         return mapToResponse(transaction);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PaymentTransactionResponse getPaymentByOrderNumber(String requesterUserId, String bearerToken, String orderNumber) {
         OrderPaymentContextResponse context = fetchOrderContext(orderNumber, bearerToken);
         validatePaymentRequester(requesterUserId, context);
 
-        Optional<PaymentTransaction> transactionOpt = paymentTransactionRepository.findByOrderNumber(orderNumber);
+        Optional<PaymentTransaction> transactionOpt = paymentTransactionRepository.findByOrderNumberForUpdate(orderNumber);
 
         if (transactionOpt.isPresent()) {
+            expireAttempt(transactionOpt.get(), LocalDateTime.now());
             return mapToResponse(transactionOpt.get());
         }
 
@@ -163,6 +166,7 @@ public class PaymentService {
                 .orderNumber(orderNumber)
                 .provider("VNPAY")
                 .status("NOT_CREATED")
+                .retryAvailable("VALIDATED".equals(context.getStatus()))
                 .amount(context.getTotalPrice() != null ? context.getTotalPrice() : BigDecimal.ZERO)
                 .paymentUrl(null)
                 .txnRef(null)
@@ -170,58 +174,100 @@ public class PaymentService {
                 .build();
     }
 
-    @Transactional
+    @Transactional(readOnly = true)
     public ResponseEntity<Void> handleVnpayReturn(Map<String, String> params) {
-        PaymentReturnResult result = processReturn(params);
-        String redirectUrl = vnPayConfig.getFrontendBaseUrl() + "/checkout/waiting/" + result.orderNumber()
-                + (result.success() ? "?payment=success" : "?payment=failed");
+        // Browser navigation validates integrity and identity, but never records a receipt or publishes events.
+        Map<String,String> verified = verifyCallback(params);
+        PaymentTransaction payment = paymentTransactionRepository.findByTxnRef(verified.get("vnp_TxnRef"))
+                .orElseThrow(() -> new CallbackRejected("01","Order not found"));
+        verifyAmount(verified,payment);
+        String redirectUrl = vnPayConfig.getFrontendBaseUrl() + "/checkout/waiting/"
+                + java.net.URLEncoder.encode(payment.getOrderNumber(),StandardCharsets.UTF_8) + "?payment=waiting";
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
     }
 
     @Transactional
-    public Map<String, String> handleVnpayIpn(Map<String, String> params) {
-        PaymentReturnResult result = processReturn(params);
-        if (result.success()) {
-            return Map.of("RspCode", "00", "Message", "Confirm Success");
-        }
-        return Map.of("RspCode", "02", "Message", result.message());
+    public Map<String, String> handleVnpayIpn(Map<String, String> rawParams) {
+        try {
+            Map<String,String> params = verifyCallback(rawParams);
+            PaymentTransaction transaction = paymentTransactionRepository.findByTxnRefForUpdate(params.get("vnp_TxnRef"))
+                    .orElseThrow(() -> new CallbackRejected("01","Order not found"));
+            verifyAmount(params,transaction);
+            boolean success = "00".equals(params.get("vnp_ResponseCode")) && "00".equals(params.get("vnp_TransactionStatus"));
+            if (transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus())
+                    || ("FAILED".equals(transaction.getStatus()) && !success)) return ack("02","Order already confirmed");
+            if (!Set.of("PENDING","FAILED","EXPIRED_RECONCILIATION_REQUIRED").contains(transaction.getStatus()))
+                return ack("02","Order already confirmed");
+            transaction.setGatewayResponseCode(params.get("vnp_ResponseCode"));
+            transaction.setGatewayTransactionNo(params.get("vnp_TransactionNo"));
+            transaction.setLastCallbackAt(LocalDateTime.now());
+            transaction.setStatus(success ? "SUCCESS_PENDING_ORDER" : "FAILED");
+            transaction.setProviderSuccessReceived(success);
+            transaction.setGatewayMessage(success ? "Đã ghi nhận tiền; đang xác nhận quyết định đơn hàng" : "Thanh toán thất bại hoặc bị hủy");
+            paymentTransactionRepository.save(transaction);
+            if (success) publish("online-payment-received-topic",transaction.getOrderNumber(),
+                    new OnlinePaymentReceivedEvent(transaction.getOrderNumber(),transaction.getTxnRef(),transaction.getAmount()));
+            else publish("payment-failed-topic",transaction.getOrderNumber(),
+                    new PaymentFailedEvent(transaction.getOrderNumber(),"VNPAY response="+params.get("vnp_ResponseCode"),transaction.getTxnRef()));
+            // A verified failure is also an accepted, durably recorded notification.
+            return ack("00","Confirm Success");
+        } catch (CallbackRejected rejected) {return ack(rejected.code,rejected.getReason());}
     }
 
-    private PaymentReturnResult processReturn(Map<String,String> rawParams) {
+    private Map<String,String> verifyCallback(Map<String,String> rawParams) {
         validateVnpayConfiguration();
         Map<String,String> params = new HashMap<>(rawParams == null ? Map.of() : rawParams);
         String secureHash = params.remove("vnp_SecureHash");params.remove("vnp_SecureHashType");
         String expected = VNPayUtil.hmacSHA512(vnPayConfig.getSecretKey(), VNPayUtil.buildHashData(params));
-        if (secureHash == null || !MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII), secureHash.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII)))
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid payment signature");
-        String txnRef = params.get("vnp_TxnRef");
-        if (txnRef == null || txnRef.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing payment reference");
-        PaymentTransaction transaction = paymentTransactionRepository.findByTxnRefForUpdate(txnRef)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment transaction not found"));
+        if (secureHash == null || !MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII),secureHash.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII))
+                || !vnPayConfig.getTmnCode().equals(params.get("vnp_TmnCode"))) throw new CallbackRejected("97","Invalid signature or merchant");
+        if (params.get("vnp_TxnRef") == null || params.get("vnp_TxnRef").isBlank()) throw new CallbackRejected("01","Order not found");
+        if (!params.getOrDefault("vnp_ResponseCode", "").matches("[0-9]{2}")
+                || !params.getOrDefault("vnp_TransactionStatus", "").matches("[0-9]{2}")) throw new CallbackRejected("99","Invalid request");
+        return params;
+    }
+
+    private void verifyAmount(Map<String,String> params, PaymentTransaction payment) {
         try {
-            BigInteger amount = new BigInteger(params.getOrDefault("vnp_Amount", "-1"));
-            if (!amount.equals(transaction.getAmount().multiply(BigDecimal.valueOf(100)).toBigIntegerExact())
-                    || !vnPayConfig.getTmnCode().equals(params.get("vnp_TmnCode")))
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Payment amount or merchant mismatch");
-        } catch (NumberFormatException | ArithmeticException ex) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid payment amount"); }
-        String responseCode = params.getOrDefault("vnp_ResponseCode", "99");
-        String gatewayStatus = params.getOrDefault("vnp_TransactionStatus", responseCode);
-        boolean success = "00".equals(responseCode) && "00".equals(gatewayStatus);
-        if (transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus()))
-            return new PaymentReturnResult(transaction.getOrderNumber(), true, "Already received");
-        if ("FAILED".equals(transaction.getStatus()) && !success)
-            return new PaymentReturnResult(transaction.getOrderNumber(), false, "Payment already failed");
-        if (!Set.of("PENDING", "FAILED").contains(transaction.getStatus()))
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Invalid payment state");
-        transaction.setGatewayResponseCode(responseCode);transaction.setGatewayTransactionNo(params.get("vnp_TransactionNo"));
-        transaction.setStatus(success ? "SUCCESS_PENDING_ORDER" : "FAILED");
-        transaction.setProviderSuccessReceived(success);
-        transaction.setGatewayMessage(success ? "Đã ghi nhận tiền; đang xác nhận quyết định đơn hàng" : "Thanh toán thất bại hoặc bị hủy");
-        paymentTransactionRepository.save(transaction);
-        if (success) publish("online-payment-received-topic", transaction.getOrderNumber(),
-                new OnlinePaymentReceivedEvent(transaction.getOrderNumber(), txnRef, transaction.getAmount()));
-        else publish("payment-failed-topic", transaction.getOrderNumber(), new PaymentFailedEvent(transaction.getOrderNumber(), "VNPAY response=" + responseCode));
-        return new PaymentReturnResult(transaction.getOrderNumber(), success, success ? "Receipt recorded" : "Payment failed");
+            if (!new BigInteger(params.getOrDefault("vnp_Amount","-1")).equals(payment.getAmount().multiply(BigDecimal.valueOf(100)).toBigIntegerExact()))
+                throw new CallbackRejected("04","Invalid amount");
+        } catch (NumberFormatException | ArithmeticException ex) {throw new CallbackRejected("04","Invalid amount");}
+    }
+    private Map<String,String> ack(String code,String message) {return Map.of("RspCode",code,"Message",message);}
+    private static class CallbackRejected extends ResponseStatusException {
+        private final String code;
+        CallbackRejected(String code,String message) {super(HttpStatus.BAD_REQUEST,message);this.code=code;}
+    }
+
+    private void expireAttempt(PaymentTransaction payment, LocalDateTime now) {
+        if (!"PENDING".equals(payment.getStatus()) || payment.getPaymentUrl() == null) return;
+        if (payment.getExpiresAt() != null && payment.getExpiresAt().isAfter(now)) return;
+        payment.setStatus("EXPIRED_RECONCILIATION_REQUIRED");payment.setPaymentUrl(null);
+        payment.setGatewayMessage("Liên kết đã hết hạn; cần đối soát trước khi thử lại. Vui lòng liên hệ hỗ trợ.");
+        paymentTransactionRepository.save(payment);
+        publish("payment-investigation-topic",payment.getOrderNumber(),new PaymentInvestigationEvent(payment.getOrderNumber(),payment.getTxnRef(),"PAYMENT_ATTEMPT_EXPIRED"));
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString="${app.payment.recovery.scan-ms:30000}")
+    public void recoverPayments() {
+        LocalDateTime now=LocalDateTime.now();
+        for (String ref : paymentTransactionRepository.findRecoveryCandidates(now,now.minusMinutes(5),org.springframework.data.domain.PageRequest.of(0,20))) recoverPayment(ref,now);
+    }
+    public void recoverPayment(String ref,LocalDateTime now) {
+        transactions.executeWithoutResult(tx -> {
+            PaymentTransaction payment=paymentTransactionRepository.findByTxnRefForUpdate(ref).orElseThrow();
+            expireAttempt(payment,now);
+            if (!"SUCCESS_PENDING_ORDER".equals(payment.getStatus()) || (payment.getRecoveryNextAt()!=null && payment.getRecoveryNextAt().isAfter(now))) return;
+            if (payment.getRecoveryAttempts() >= 5) {
+                payment.setStatus("RECONCILIATION_REQUIRED");payment.setOrderDecisionReason("ORDER_DECISION_RETRIES_EXHAUSTED");
+                publish("payment-investigation-topic",payment.getOrderNumber(),new PaymentInvestigationEvent(payment.getOrderNumber(),ref,"ORDER_DECISION_RETRIES_EXHAUSTED"));
+            } else {
+                publish("online-payment-received-topic",payment.getOrderNumber(),new OnlinePaymentReceivedEvent(payment.getOrderNumber(),ref,payment.getAmount()));
+                payment.setRecoveryAttempts(payment.getRecoveryAttempts()+1);
+                payment.setRecoveryNextAt(now.plusSeconds(Math.min(300,10L << payment.getRecoveryAttempts())));
+            }
+            paymentTransactionRepository.save(payment);
+        });
     }
 
     @KafkaListener(topics="online-payment-decision-topic", groupId="payment-order-decision-group",
@@ -255,7 +301,9 @@ public class PaymentService {
                 .provider(transaction.getProvider())
                 .status(transaction.getStatus())
                 .amount(transaction.getAmount())
-                .paymentUrl(transaction.getPaymentUrl())
+                .paymentUrl("PENDING".equals(transaction.getStatus()) ? transaction.getPaymentUrl() : null)
+                .expiresAt(transaction.getExpiresAt())
+                .retryAvailable(false)
                 .txnRef(transaction.getTxnRef())
                 .gatewayMessage(transaction.getGatewayMessage())
                 .providerSuccessReceived(transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus()))
@@ -279,7 +327,7 @@ public class PaymentService {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
         LocalDateTime now = LocalDateTime.now();
         params.put("vnp_CreateDate", now.format(formatter));
-        params.put("vnp_ExpireDate", now.plusMinutes(15).format(formatter));
+        params.put("vnp_ExpireDate", transaction.getExpiresAt().format(formatter));
         return params;
     }
 
@@ -330,5 +378,5 @@ public class PaymentService {
         }
     }
 
-    private record PaymentReturnResult(String orderNumber, boolean success, String message) {}
+
 }

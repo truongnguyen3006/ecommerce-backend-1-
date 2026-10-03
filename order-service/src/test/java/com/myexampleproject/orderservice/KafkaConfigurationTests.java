@@ -27,4 +27,10 @@ class KafkaConfigurationTests {
         }
         assertThat(context.getBeansOfType(ConcurrentKafkaListenerContainerFactory.class)).isNotEmpty();
     }
+    @Test void deadLetterContainerDoesNotReplaceTheNormalConsumersRetryFactory() {
+        var normal=context.getBean("kafkaListenerContainerFactory",ConcurrentKafkaListenerContainerFactory.class);
+        var deadLetter=context.getBean("workflowDeadLetterKafkaListenerContainerFactory",ConcurrentKafkaListenerContainerFactory.class);
+        assertThat(normal).isNotSameAs(deadLetter);
+    }
+
 }

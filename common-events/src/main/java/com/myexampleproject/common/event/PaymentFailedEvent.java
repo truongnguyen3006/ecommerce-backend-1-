@@ -10,4 +10,8 @@ import lombok.NoArgsConstructor;
 public class PaymentFailedEvent {
     private String orderNumber;
     private String reason;
+    private String txnRef;
+    public PaymentFailedEvent(String orderNumber, String reason) {
+        this(orderNumber, reason, null);
+    }
 }

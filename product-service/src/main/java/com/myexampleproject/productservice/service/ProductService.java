@@ -43,6 +43,7 @@ public class ProductService {
     private final ProductRepository productRepository;
     private final JdbcOutbox outbox;
     private final ProductVariantRepository variantRepository;
+    private final SkuIdentityService skuIdentity;
 
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     public void clearProductListCache() {
@@ -56,6 +57,7 @@ public class ProductService {
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     public ProductResponse createProduct(ProductRequest request) {
         validateRequest(request, true);
+        if (request.getVariants() != null) request.getVariants().forEach(v -> skuIdentity.reserveNew(v.getSkuCode()));
 
         Product product = Product.builder()
                 .name(request.getName())
@@ -90,6 +92,7 @@ public class ProductService {
         product.setVariants(variants);
 
         Product savedProduct = productRepository.save(product);
+        variants.forEach(v -> skuIdentity.attach(v.getSkuCode(),savedProduct.getId()));
 
         // Gửi Kafka Event
         if (request.getVariants() != null) {
@@ -188,12 +191,15 @@ public class ProductService {
             } else {
                 // DELETE: Nếu Frontend gửi danh sách biến thể nhưng thiếu SKU này -> Xóa
                 outbox.append("product-cache-update-topic", sku, null);
+                skuIdentity.retire(sku);
                 iterator.remove();
             }
         }
 
         // B. THÊM MỚI (NEW VARIANTS)
         for (ProductVariantRequest newReq : requestMap.values()) {
+            skuIdentity.reserveNew(newReq.getSkuCode());
+            skuIdentity.attach(newReq.getSkuCode(),id);
             // [FIX 4] Logic giá create variant: Nếu không nhập giá riêng, lấy giá Base từ Product Entity
             BigDecimal variantPrice = newReq.getPrice();
             if (variantPrice == null) {
@@ -272,7 +278,7 @@ public class ProductService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
         }
         Product product = productRepository.findById(id).orElseThrow();
-        product.getVariants().forEach(v -> outbox.append("product-cache-update-topic", v.getSkuCode(), null));
+        product.getVariants().forEach(v -> {skuIdentity.retire(v.getSkuCode());outbox.append("product-cache-update-topic", v.getSkuCode(), null);});
         productRepository.deleteById(id);
     }
 

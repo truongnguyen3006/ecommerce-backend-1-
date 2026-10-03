@@ -115,4 +115,63 @@ class OrderBusinessTests {
         }
         verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
     }
+    @Test void sqlProofSurvivesRedisLossAndServiceRestart() {
+        Order o=order("PENDING");result("SKU1",2,true);state.clear();
+        service=new OrderService(new SimpleMeterRegistry(),repository,kafka,new ObjectMapper(),catalog,transactions,redis);service.initMetrics();
+        result("SKU2",1,true);assertThat(o.getStatus()).isEqualTo("VALIDATED");assertThat(o.getOrderLineItemsList()).allMatch(i -> Boolean.TRUE.equals(i.getInventoryOutcome()));
+    }
+    @Test void agedRetriesReuseBusinessIdentityAndStopWithoutRestoringUnknownDeductions() {
+        Order o=order("PENDING");result("SKU1",2,true);java.time.LocalDateTime time=java.time.LocalDateTime.now();
+        for(int i=0;i<9;i++) service.recoverWorkflow("O",time.plusHours(i));
+        assertThat(o.getRecoveryAttempts()).isEqualTo(5);assertThat(o.isWorkflowInvestigationRequired()).isTrue();
+        verify(kafka,times(5)).append(eq("inventory-check-request-topic"),eq("SKU2"),argThat(e -> ((InventoryCheckRequest)e).getOrderNumber().equals("O")));
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+        result("SKU2",1,true);assertThat(o.getStatus()).isEqualTo("VALIDATED");assertThat(o.isWorkflowInvestigationRequired()).isFalse();
+    }
+    @Test void recoveryLeavesPaidCancelledAndCompensatedOrdersUntouched() {
+        for(String status:List.of("COMPLETED","CANCELLED","FAILED","PAYMENT_FAILED")) {order(status);service.recoverWorkflow("O",java.time.LocalDateTime.now());}
+        verifyNoInteractions(kafka);
+    }
+    @Test void unprovenFailureRequiresInvestigationWithoutStrandingUndocumentedCompensation() {
+        Order o=order("PENDING");service.handleOrderEvents(List.of(event("order-failed-topic",new OrderFailedEvent("O","unproven"))));
+        assertThat(o.getStatus()).isEqualTo("PENDING");assertThat(o.isWorkflowInvestigationRequired()).isTrue();verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+    @Test void staleReceiptAfterNewerFenceRequiresAccountingAndStaleFailureCannotRestoreStock() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");o.setPaymentAttemptId("NEW");
+        service.handleOrderEvents(List.of(event("payment-failed-topic",new PaymentFailedEvent("O","failed","OLD"))));
+        receipt("OLD");assertThat(o.getStatus()).isEqualTo("VALIDATED");assertThat(o.isPaymentReconciliationRequired()).isTrue();
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+
+    @Test void deadLetterIsRecordedAndDoesNotPerformFinancialOrInventoryMutation() {
+        var deadLetters=mock(com.myexampleproject.orderservice.service.WorkflowDeadLetters.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"deadLetters",deadLetters);
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");o.setPaymentAttemptId("TXN");
+        service.recordDeadLetters(List.of(event("online-payment-received-topic.DLT",new OnlinePaymentReceivedEvent("O","TXN",BigDecimal.valueOf(30)))));
+        assertThat(o.getStatus()).isEqualTo("VALIDATED");assertThat(o.isWorkflowInvestigationRequired()).isTrue();
+        verify(deadLetters).record("online-payment-received-topic.DLT",0,1,"O");verifyNoInteractions(kafka);
+        assertThatThrownBy(() -> service.cancelOrder("O","A",false,null)).isInstanceOf(ResponseStatusException.class);
+    }
+
+    @Test void unprovenLegacySuccessCannotCompleteAnOnlineOrderAcrossANewerFence() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");o.setPaymentAttemptId("NEW");
+        service.handleOrderEvents(List.of(event("payment-processed-topic",new PaymentProcessedEvent("O","OLD"))));
+        assertThat(o.getStatus()).isEqualTo("VALIDATED");assertThat(o.isPaymentReconciliationRequired()).isTrue();verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+    @Test void verifiedFailedIpnResolvesExpiredInvestigationAndRestoresOnce() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");o.setPaymentAttemptId("TXN");o.setWorkflowInvestigationRequired(true);
+        var failure=new PaymentFailedEvent("O","verified failure","TXN");
+        service.handleOrderEvents(List.of(event("payment-failed-topic",failure)));service.handleOrderEvents(List.of(event("payment-failed-topic",failure)));
+        assertThat(o.getStatus()).isEqualTo("PAYMENT_FAILED");assertThat(o.isWorkflowInvestigationRequired()).isFalse();
+        service.cancelOrder("O","A",false,null);verify(kafka,times(2)).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+
+    @Test void newlyIssuedAttemptOnAnOlderOrderDoesNotImmediatelyBecomeAged() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");o.setOrderDate(java.time.LocalDateTime.now().minusDays(1));
+        service.beginOnlinePayment("O","A","TXN");service.recoverWorkflow("O",java.time.LocalDateTime.now());
+        assertThat(o.isWorkflowInvestigationRequired()).isFalse();assertThat(o.getRecoveryNextAt()).isAfter(java.time.LocalDateTime.now());
+        service.recoverWorkflow("O",java.time.LocalDateTime.now().plusHours(1));assertThat(o.isWorkflowInvestigationRequired()).isTrue();
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+
 }

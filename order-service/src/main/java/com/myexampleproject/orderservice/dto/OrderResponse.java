@@ -33,4 +33,6 @@ public class OrderResponse {
     private LocalDateTime cancelledAt;
     private boolean onlinePaymentInFlight;
     private boolean paymentReconciliationRequired;
+    private boolean workflowInvestigationRequired;
+    private String workflowInvestigationReason;
 }

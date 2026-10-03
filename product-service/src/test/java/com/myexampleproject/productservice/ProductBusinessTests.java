@@ -17,7 +17,7 @@ class ProductBusinessTests {
     ProductRepository repository = mock(ProductRepository.class);
     ProductVariantRepository variants = mock(ProductVariantRepository.class);
     JdbcOutbox kafka = mock(JdbcOutbox.class);
-    ProductService service = new ProductService(repository,kafka,variants);
+    ProductService service = new ProductService(repository,kafka,variants,mock(com.myexampleproject.productservice.service.SkuIdentityService.class));
     @Test void missingProductReturns404() {
         when(repository.findById(9L)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.getProductById(9L)).isInstanceOfSatisfying(ResponseStatusException.class,e -> assertThat(e.getStatusCode().value()).isEqualTo(404));

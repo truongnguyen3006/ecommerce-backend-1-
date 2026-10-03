@@ -24,6 +24,8 @@ import com.myexampleproject.common.event.InventoryCheckRequest;
 import com.myexampleproject.common.event.InventoryCheckResult;
 import org.springframework.data.redis.core.RedisTemplate; // <-- Bạn sẽ cần Redis
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.Objects;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
@@ -142,17 +144,19 @@ public class OrderService {
     private void processInventoryResult(InventoryCheckResult result) {
         Order order = orderRepository.findByOrderNumberForUpdate(result.getOrderNumber()).orElseThrow();
         if (!"PENDING".equals(order.getStatus())) return;
-        String sagaKey = SAGA_PREFIX + order.getOrderNumber();
         OrderLineItems expected = order.getOrderLineItemsList().stream().filter(i -> i.getSkuCode().equals(result.getItem().getSkuCode())).findFirst().orElseThrow();
         if (!expected.getQuantity().equals(result.getItem().getQuantity())) throw new IllegalArgumentException("Inventory result quantity mismatch");
-        redisTemplate.opsForHash().putIfAbsent(sagaKey, "result:" + expected.getSkuCode(), result.isSuccess());
-        redisTemplate.expire(sagaKey, Duration.ofDays(1));
-        Map<Object,Object> state = redisTemplate.opsForHash().entries(sagaKey);
-        if (order.getOrderLineItemsList().stream().anyMatch(i -> !state.containsKey("result:" + i.getSkuCode()))) return;
-        boolean success = order.getOrderLineItemsList().stream().allMatch(i -> Boolean.TRUE.equals(state.get("result:" + i.getSkuCode())));
+        if (expected.getInventoryOutcome() != null && expected.getInventoryOutcome() != result.isSuccess()) {
+            investigate(order, "CONFLICTING_INVENTORY_PROOF");return;
+        }
+        expected.setInventoryOutcome(result.isSuccess());
+        orderRepository.save(order);
+        if (order.getOrderLineItemsList().stream().anyMatch(i -> i.getInventoryOutcome() == null)) return;
+        boolean success = order.getOrderLineItemsList().stream().allMatch(i -> Boolean.TRUE.equals(i.getInventoryOutcome()));
+        order.setWorkflowInvestigationRequired(false);order.setWorkflowInvestigationReason(null);
         if (!success) {
             // Only successful deductions are restored, after every SKU result has arrived.
-            for (OrderLineItems item : order.getOrderLineItemsList()) if (Boolean.TRUE.equals(state.get("result:" + item.getSkuCode())))
+            for (OrderLineItems item : order.getOrderLineItemsList()) if (Boolean.TRUE.equals(item.getInventoryOutcome()))
                 publish("inventory-adjustment-topic", item.getSkuCode(), new InventoryAdjustmentEvent(item.getSkuCode(), item.getQuantity(), "INVENTORY_FAILED:" + order.getOrderNumber() + ":" + item.getSkuCode()));
             order.setStatus("FAILED");orderRepository.save(order);ordersFailedCounter.increment();
             publish("order-failed-topic", order.getOrderNumber(), new OrderFailedEvent(order.getOrderNumber(), "Insufficient inventory"));
@@ -223,6 +227,8 @@ public class OrderService {
                 .cancelledAt(order.getCancelledAt())
                 .onlinePaymentInFlight(order.getPaymentAttemptId() != null && "VALIDATED".equals(order.getStatus()))
                 .paymentReconciliationRequired(order.isPaymentReconciliationRequired())
+                .workflowInvestigationRequired(order.isWorkflowInvestigationRequired())
+                .workflowInvestigationReason(order.getWorkflowInvestigationReason())
                 .build();
     }
 
@@ -278,7 +284,8 @@ public class OrderService {
                     "order-failed-topic",
                     "payment-processed-topic",
                     "payment-failed-topic",
-                    "online-payment-received-topic"
+                    "online-payment-received-topic",
+                    "payment-investigation-topic"
             },
             containerFactory = "kafkaListenerContainerFactory" // <-- Dùng factory chung
     )
@@ -290,6 +297,11 @@ public class OrderService {
                     case "order-failed-topic" -> handleOrderFailure(objectMapper.convertValue(record.value(), OrderFailedEvent.class));
                     case "payment-processed-topic" -> handlePaymentSuccess(objectMapper.convertValue(record.value(), PaymentProcessedEvent.class));
                     case "online-payment-received-topic" -> handleOnlinePaymentReceived(objectMapper.convertValue(record.value(), OnlinePaymentReceivedEvent.class));
+                    case "payment-investigation-topic" -> {
+                        PaymentInvestigationEvent event = objectMapper.convertValue(record.value(), PaymentInvestigationEvent.class);
+                        Order order = orderRepository.findByOrderNumberForUpdate(event.orderNumber()).orElseThrow();
+                        if (Objects.equals(order.getPaymentAttemptId(), event.txnRef()) && !"COMPLETED".equals(order.getStatus())) investigate(order, event.reason());
+                    }
                     case "payment-failed-topic" -> handlePaymentFailure(objectMapper.convertValue(record.value(), PaymentFailedEvent.class));
                     default -> throw new IllegalArgumentException("Unexpected order event topic");
                 }
@@ -324,8 +336,8 @@ public class OrderService {
         if (!"PENDING".equals(order.getStatus())) return;
         // Replays retain any already received results and resend idempotent per-order/SKU checks.
         String key = SAGA_PREFIX + order.getOrderNumber();
-        redisTemplate.expire(key, Duration.ofDays(1));
-        for (OrderLineItems item : order.getOrderLineItemsList())
+        // SQL receipts survive Redis eviction and service restarts.
+        for (OrderLineItems item : order.getOrderLineItemsList()) if (item.getInventoryOutcome() == null)
             publish("inventory-check-request-topic", item.getSkuCode(), new InventoryCheckRequest(order.getOrderNumber(), new OrderLineItemRequest(item.getSkuCode(), item.getQuantity())));
         publish("order-status-topic", order.getOrderNumber(), new OrderStatusEvent(order.getOrderNumber(), "PENDING"));
     }
@@ -356,12 +368,8 @@ public class OrderService {
         Order order = orderRepository.findByOrderNumberForUpdate(failedEvent.getOrderNumber())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + failedEvent.getOrderNumber()));
         if (order.getStatus().equals("PENDING")) {
-            order.setStatus("FAILED");
-            orderRepository.save(order);
-            log.warn("Order {} status updated to FAILED due to inventory issue.", order.getOrderNumber());
-            publish("order-status-topic", order.getOrderNumber(),
-                    new OrderStatusEvent(order.getOrderNumber(), order.getStatus()));
-            this.ordersFailedCounter.increment();
+            // A coarse failure cannot prove which checks deducted stock. Keep allocation until proof arrives.
+            investigate(order, "ORDER_FAILURE_WITHOUT_COMPLETE_INVENTORY_PROOF");
         } else {
             log.warn("Received failure event for order {} but status was not PENDING (Status: {}).",
                     order.getOrderNumber(), order.getStatus());
@@ -376,6 +384,7 @@ public class OrderService {
                 && (order.getPaymentAttemptId() == null || order.getPaymentAttemptId().equals(receipt.getTxnRef()))
                 && order.getTotalPrice().compareTo(receipt.getAmount()) == 0 && !order.isPaymentReconciliationRequired()) {
             order.setPaymentReceivedRef(receipt.getTxnRef());
+            order.setWorkflowInvestigationRequired(false);order.setWorkflowInvestigationReason(null);
             order.setStatus("COMPLETED");
             orderRepository.save(order);
             publish("order-status-topic", order.getOrderNumber(), new OrderStatusEvent(order.getOrderNumber(), "COMPLETED"));
@@ -403,9 +412,17 @@ public class OrderService {
         Order order = orderRepository.findByOrderNumberForUpdate(paymentProcessedEvent.getOrderNumber())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + paymentProcessedEvent.getOrderNumber()));
 
+        if ("VNPAY".equals(order.getPaymentMethod())) {
+            // Online completion is owned by the verified receipt/Order decision handshake.
+            if ("COMPLETED".equals(order.getStatus()) && Objects.equals(order.getPaymentReceivedRef(),paymentProcessedEvent.getPaymentId()) && !order.isPaymentReconciliationRequired()) return;
+            order.setPaymentReconciliationRequired(true);orderRepository.save(order);
+            publish("online-payment-decision-topic",order.getOrderNumber(),new OnlinePaymentDecisionEvent(order.getOrderNumber(),paymentProcessedEvent.getPaymentId(),false,"UNPROVEN_LEGACY_PAYMENT"));
+            return;
+        }
         if ("VALIDATED".equals(order.getStatus()) && !order.isPaymentReconciliationRequired()) {
             if ("VNPAY".equals(order.getPaymentMethod())) order.setPaymentReceivedRef(paymentProcessedEvent.getPaymentId());
             order.setStatus("COMPLETED");
+            order.setWorkflowInvestigationRequired(false);order.setWorkflowInvestigationReason(null);
             order.setCancelReason(null);
             order.setCancelledAt(null);
             orderRepository.save(order);
@@ -430,8 +447,14 @@ public class OrderService {
                 paymentFailedEvent.getOrderNumber(), paymentFailedEvent.getReason());
         Order order = orderRepository.findByOrderNumberForUpdate(paymentFailedEvent.getOrderNumber())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + paymentFailedEvent.getOrderNumber()));
+        if ("VNPAY".equals(order.getPaymentMethod()) && (order.getPaymentReceivedRef() != null
+                || paymentFailedEvent.getTxnRef() == null || !Objects.equals(order.getPaymentAttemptId(), paymentFailedEvent.getTxnRef()))) {
+            if (!"COMPLETED".equals(order.getStatus())) investigate(order, "UNMATCHED_PAYMENT_FAILURE");
+            return;
+        }
         if ("VALIDATED".equals(order.getStatus()) && !order.isPaymentReconciliationRequired()) {
             order.setStatus("PAYMENT_FAILED");
+            order.setWorkflowInvestigationRequired(false);order.setWorkflowInvestigationReason(null);
             orderRepository.save(order);
             restockOrderItems(order, "COMPENSATION: Payment Failed for Order " + order.getOrderNumber());
             log.warn("Order {} status updated to PAYMENT_FAILED.", order.getOrderNumber());
@@ -449,7 +472,8 @@ public class OrderService {
             transactions.executeWithoutResult(tx -> {
                 OrderValidatedEvent event = objectMapper.convertValue(record.value(), OrderValidatedEvent.class);
                 Order order = orderRepository.findByOrderNumberForUpdate(event.getOrderNumber()).orElseThrow();
-                if ("PENDING".equals(order.getStatus())) {
+                if ("PENDING".equals(order.getStatus()) && !order.getOrderLineItemsList().isEmpty()
+                        && order.getOrderLineItemsList().stream().allMatch(i -> Boolean.TRUE.equals(i.getInventoryOutcome()))) {
                     order.setStatus("VALIDATED");orderRepository.save(order);
                     publish("order-status-topic", order.getOrderNumber(), new OrderStatusEvent(order.getOrderNumber(), "VALIDATED"));
                 }
@@ -483,10 +507,11 @@ public class OrderService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
         validateOrderAccess(order, requesterUserId, false);
         if (!"VALIDATED".equals(order.getStatus()) || !"VNPAY".equals(order.getPaymentMethod())
-                || order.isPaymentReconciliationRequired())
+                || order.isWorkflowInvestigationRequired() || order.isPaymentReconciliationRequired())
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Order cannot start an online payment");
         if (order.getPaymentAttemptId() != null && !txnRef.equals(order.getPaymentAttemptId()))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Another payment attempt is already recorded");
+        if (order.getPaymentAttemptId() == null) order.setRecoveryNextAt(LocalDateTime.now().plusMinutes(Math.max(1,agedMinutes)));
         order.setPaymentAttemptId(txnRef);
         orderRepository.save(order);
     }
@@ -503,7 +528,7 @@ public class OrderService {
                     "Chỉ có thể hủy đơn đã xác nhận hoặc thanh toán thất bại. Đơn đang ở trạng thái: " + order.getStatus());
         }
 
-        if (order.isPaymentReconciliationRequired() || ("VALIDATED".equals(order.getStatus()) && order.getPaymentAttemptId() != null)) {
+        if (order.isWorkflowInvestigationRequired() || order.isPaymentReconciliationRequired() || ("VALIDATED".equals(order.getStatus()) && order.getPaymentAttemptId() != null)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "ONLINE_PAYMENT_IN_FLIGHT");
         }
         if ("VALIDATED".equals(order.getStatus())) restockOrderItems(order, "CANCELLED: " + orderNumber);
@@ -569,4 +594,75 @@ public class OrderService {
         orderLineItems.setSkuCode(orderLineItemsDto.getSkuCode());
         return orderLineItems;
     }
+    @org.springframework.beans.factory.annotation.Value("${app.saga.aged-minutes:30}")
+    private long agedMinutes = 30;
+    @org.springframework.beans.factory.annotation.Value("${app.saga.max-retries:5}")
+    private int recoveryMaxRetries = 5;
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString = "${app.saga.scan-ms:30000}")
+    public void recoverAgedWorkflows() {
+        LocalDateTime now = LocalDateTime.now();
+        for (String id : orderRepository.findRecoveryCandidates(now.minusMinutes(Math.max(1,agedMinutes)), now,
+                org.springframework.data.domain.PageRequest.of(0,20))) recoverWorkflow(id, now);
+    }
+
+    public void recoverWorkflow(String id, LocalDateTime now) {
+        transactions.executeWithoutResult(tx -> {
+            Order order = orderRepository.findByOrderNumberForUpdate(id).orElseThrow();
+            if (!Set.of("PENDING","VALIDATED").contains(order.getStatus()) || order.isWorkflowInvestigationRequired()
+                    || order.isPaymentReconciliationRequired() || (order.getRecoveryNextAt() != null && order.getRecoveryNextAt().isAfter(now))) return;
+            if ("VALIDATED".equals(order.getStatus()) && "VNPAY".equals(order.getPaymentMethod())) {
+                // Awaiting a shopper is not a stuck saga. An issued attempt is uncertain; never release its fence.
+                if (order.getPaymentAttemptId() != null) investigate(order,"AGED_ONLINE_PAYMENT");
+                else order.setRecoveryNextAt(now.plusHours(24));
+                return;
+            }
+            if (order.getRecoveryAttempts() >= Math.max(1,recoveryMaxRetries)) { investigate(order,"SAGA_RETRIES_EXHAUSTED");return; }
+            if ("PENDING".equals(order.getStatus())) {
+                for (OrderLineItems item : order.getOrderLineItemsList()) if (item.getInventoryOutcome() == null)
+                    publish("inventory-check-request-topic",item.getSkuCode(),new InventoryCheckRequest(id,new OrderLineItemRequest(item.getSkuCode(),item.getQuantity())));
+            } else publish("order-validated-topic",id,new OrderValidatedEvent(id,order.getOrderLineItemsList().stream()
+                    .map(i -> new OrderLineItemRequest(i.getSkuCode(),i.getQuantity())).toList()));
+            order.setRecoveryAttempts(order.getRecoveryAttempts()+1);
+            order.setRecoveryNextAt(now.plusSeconds(Math.min(300,10L << Math.min(order.getRecoveryAttempts(),5))));
+            orderRepository.save(order);
+        });
+    }
+
+    @Transactional
+    public void retryInvestigatedInventory(String id) {
+        Order order=orderRepository.findByOrderNumberForUpdate(id).orElseThrow();
+        if (!"PENDING".equals(order.getStatus()) || order.isPaymentReconciliationRequired() || order.getPaymentAttemptId()!=null)
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"RECOVERY_UNSAFE","This workflow requires accounting investigation");
+        order.setWorkflowInvestigationRequired(false);order.setWorkflowInvestigationReason(null);
+        order.setRecoveryAttempts(0);order.setRecoveryNextAt(null);orderRepository.save(order);
+        recoverWorkflow(id,LocalDateTime.now());
+    }
+
+    private void investigate(Order order, String reason) {
+        order.setWorkflowInvestigationRequired(true);order.setWorkflowInvestigationReason(reason);
+        orderRepository.save(order);
+        log.error("Workflow investigation required order={} reason={}",order.getOrderNumber(),reason);
+    }
+
+    @KafkaListener(topics={"inventory-check-result-topic.DLT","order-placed-topic.DLT","payment-failed-topic.DLT",
+            "payment-processed-topic.DLT","online-payment-received-topic.DLT","payment-investigation-topic.DLT","online-payment-decision-topic.DLT","order-validated-topic.DLT","order-failed-topic.DLT"},groupId="order-investigation-group",
+            containerFactory="workflowDeadLetterKafkaListenerContainerFactory")
+    public void recordDeadLetters(List<ConsumerRecord<String,Object>> records) {
+        for (var record : records) transactions.executeWithoutResult(tx -> {
+            String orderNumber = null;
+            try { orderNumber = objectMapper.valueToTree(record.value()).path("orderNumber").asText(null); } catch (IllegalArgumentException ignored) { }
+            // Store source coordinates only: no tokens, provider payloads or exception messages.
+            // JdbcOutbox's JDBC connection shares this SQL transaction via Spring.
+            recordDeadLetter(record,orderNumber);
+            if (orderNumber != null) orderRepository.findByOrderNumberForUpdate(orderNumber).ifPresent(o -> investigate(o,"DEAD_LETTER"));
+        });
+    }
+
+    private void recordDeadLetter(ConsumerRecord<String,Object> record, String orderNumber) {
+        deadLetters.record(record.topic(),record.partition(),record.offset(),orderNumber);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    private WorkflowDeadLetters deadLetters;
+
 }

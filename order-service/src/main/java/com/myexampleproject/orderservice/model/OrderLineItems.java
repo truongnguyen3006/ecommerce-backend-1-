@@ -29,6 +29,8 @@ public class OrderLineItems {
     // Thêm 2 trường này để in hóa đơn cho dễ
     private String color;
     private String size;
+    // Durable proof of this order/SKU deduction. NULL means unknown, never failure.
+    private Boolean inventoryOutcome;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id")

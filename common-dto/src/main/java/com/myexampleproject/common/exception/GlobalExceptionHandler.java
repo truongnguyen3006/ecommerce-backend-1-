@@ -33,7 +33,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<ErrorResponse> business(ResponseStatusException ex, HttpServletRequest request) {
         String message = ex.getStatusCode().is5xxServerError() ? "Service temporarily unavailable" : ex.getReason();
-        return response(ex.getStatusCode().value(), "BUSINESS_ERROR", message, request);
+        return response(ex.getStatusCode().value(), ex instanceof DomainException domain ? domain.getCode() : "BUSINESS_ERROR", message, request);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

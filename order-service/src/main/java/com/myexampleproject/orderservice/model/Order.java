@@ -63,4 +63,12 @@ public class Order {
     @Column(nullable = false)
     private boolean paymentReconciliationRequired;
 
+    @Column(nullable = false)
+    private int recoveryAttempts;
+    private LocalDateTime recoveryNextAt;
+    @Column(nullable = false)
+    private boolean workflowInvestigationRequired;
+    @Column(length = 128)
+    private String workflowInvestigationReason;
+
 }

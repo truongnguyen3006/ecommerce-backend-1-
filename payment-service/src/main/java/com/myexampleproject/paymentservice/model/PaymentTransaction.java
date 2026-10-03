@@ -57,6 +57,11 @@ public class PaymentTransaction {
 
     @Column(length = 255)
     private String orderDecisionReason;
+    private LocalDateTime expiresAt;
+    private LocalDateTime lastCallbackAt;
+    @Column(nullable = false)
+    private int recoveryAttempts;
+    private LocalDateTime recoveryNextAt;
 
     @CreationTimestamp
     private LocalDateTime createdAt;

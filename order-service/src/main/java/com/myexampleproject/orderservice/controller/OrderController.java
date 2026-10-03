@@ -8,6 +8,7 @@ import com.myexampleproject.orderservice.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -82,6 +83,11 @@ public class OrderController {
 
     public record BeginOnlinePaymentRequest(@jakarta.validation.constraints.NotBlank
                                            @jakarta.validation.constraints.Size(max=100) String txnRef) {}
+
+    @PostMapping("/admin/{orderNumber}/retry-inventory")
+    public ResponseEntity<Void> retryInventory(@AuthenticationPrincipal Jwt jwt,@PathVariable String orderNumber) {
+        requireAdmin(jwt);orderService.retryInvestigatedInventory(orderNumber);return ResponseEntity.accepted().build();
+    }
 
     private String extractUserId(Jwt jwt) {
         if (jwt == null) {

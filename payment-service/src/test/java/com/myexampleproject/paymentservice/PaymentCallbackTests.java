@@ -29,6 +29,8 @@ class PaymentCallbackTests {
         when(config.getTmnCode()).thenReturn("DEMO");when(config.getSecretKey()).thenReturn("test-only-signing-key");
         payment=PaymentTransaction.builder().orderNumber("O").txnRef("TXN").amount(BigDecimal.valueOf(100)).status("PENDING").provider("VNPAY").build();
         when(repository.findByTxnRefForUpdate("TXN")).thenReturn(Optional.of(payment));
+        when(repository.findByTxnRef("TXN")).thenReturn(Optional.of(payment));
+        when(config.getFrontendBaseUrl()).thenReturn("http://frontend.test");
         doAnswer(a -> {((Consumer)a.getArgument(0)).accept(null);return null;}).when(transactions).executeWithoutResult(any());
     }
     Map<String,String> callback(String amount,String response) {
@@ -37,9 +39,9 @@ class PaymentCallbackTests {
     }
     @Test void invalidSignatureDoesNotMutatePaymentOrPublishFailure() {
         Map<String,String> p=callback("10000","00");p.put("vnp_SecureHash","invalid");
-        assertThatThrownBy(() -> service.handleVnpayIpn(p)).isInstanceOf(ResponseStatusException.class);assertThat(payment.getStatus()).isEqualTo("PENDING");verifyNoInteractions(kafka);verify(repository,never()).save(any());
+        assertThat(service.handleVnpayIpn(p)).containsEntry("RspCode","97");assertThat(payment.getStatus()).isEqualTo("PENDING");verifyNoInteractions(kafka);verify(repository,never()).save(any());
     }
-    @Test void signedWrongAmountIsRejectedWithoutMutation() {assertThatThrownBy(() -> service.handleVnpayIpn(callback("1","00"))).isInstanceOf(ResponseStatusException.class);assertThat(payment.getStatus()).isEqualTo("PENDING");verifyNoInteractions(kafka);}
+    @Test void signedWrongAmountIsRejectedWithoutMutation() {assertThat(service.handleVnpayIpn(callback("1","00"))).containsEntry("RspCode","04");assertThat(payment.getStatus()).isEqualTo("PENDING");verifyNoInteractions(kafka);}
     @Test void validRepeatedSuccessPublishesOnce() {service.handleVnpayIpn(callback("10000","00"));service.handleVnpayIpn(callback("10000","00"));assertThat(payment.getStatus()).isEqualTo("SUCCESS_PENDING_ORDER");assertThat(payment.isProviderSuccessReceived()).isTrue();verify(kafka,times(1)).append(eq("online-payment-received-topic"),eq("O"),any());}
     @Test void failureAfterSuccessCannotReversePayment() {service.handleVnpayIpn(callback("10000","00"));service.handleVnpayIpn(callback("10000","24"));assertThat(payment.getStatus()).isEqualTo("SUCCESS_PENDING_ORDER");verify(kafka,never()).append(eq("payment-failed-topic"),anyString(),any());}
     @Test void successAfterFailureRequiresReconciliation() {service.handleVnpayIpn(callback("10000","24"));service.handleVnpayIpn(callback("10000","00"));assertThat(payment.getStatus()).isEqualTo("SUCCESS_PENDING_ORDER");assertThat(payment.isProviderSuccessReceived()).isTrue();verify(kafka).append(eq("online-payment-received-topic"),eq("O"),any());}
@@ -61,4 +63,29 @@ class PaymentCallbackTests {
         service.handleVnpayIpn(callback("10000","24"));service.handleVnpayIpn(callback("10000","24"));
         assertThat(payment.getStatus()).isEqualTo("FAILED");verify(kafka,times(1)).append(eq("payment-failed-topic"),eq("O"),any());
     }
+    @Test void browserReturnBeforeAndAfterIpnNeverWrites() {
+        assertThat(service.handleVnpayReturn(callback("10000","00")).getHeaders().getLocation().toString()).contains("payment=waiting");
+        assertThat(payment.getStatus()).isEqualTo("PENDING");verifyNoInteractions(kafka);verify(repository,never()).save(any());
+        service.handleVnpayIpn(callback("10000","00"));clearInvocations(kafka,repository);
+        service.handleVnpayReturn(callback("10000","00"));verifyNoInteractions(kafka);verify(repository,never()).save(any());
+    }
+    @Test void unknownReferenceUsesOfficialProtocol() {assertThat(service.handleVnpayIpn(Map.of())).containsEntry("RspCode","97");when(repository.findByTxnRefForUpdate("TXN")).thenReturn(Optional.empty());assertThat(service.handleVnpayIpn(callback("10000","00"))).containsEntry("RspCode","01");}
+    @Test void acceptedFailedIpnAndDuplicateHaveDifferentAcks() {assertThat(service.handleVnpayIpn(callback("10000","24"))).containsEntry("RspCode","00");assertThat(service.handleVnpayIpn(callback("10000","24"))).containsEntry("RspCode","02");}
+    @Test void expiryRetainsReferenceAndFenceAndLateSuccessIsRecognizedOnce() {
+        payment.setPaymentUrl("https://provider.test/expired");payment.setExpiresAt(java.time.LocalDateTime.now().minusMinutes(1));
+        service.recoverPayment("TXN",java.time.LocalDateTime.now());service.recoverPayment("TXN",java.time.LocalDateTime.now());
+        assertThat(payment.getStatus()).isEqualTo("EXPIRED_RECONCILIATION_REQUIRED");assertThat(payment.getPaymentUrl()).isNull();assertThat(payment.getTxnRef()).isEqualTo("TXN");
+        verify(kafka,times(1)).append(eq("payment-investigation-topic"),eq("O"),any());
+        assertThat(service.handleVnpayIpn(callback("10000","00"))).containsEntry("RspCode","00");
+        assertThat(service.handleVnpayIpn(callback("10000","00"))).containsEntry("RspCode","02");
+        verify(kafka,times(1)).append(eq("online-payment-received-topic"),eq("O"),any());
+    }
+    @Test void receiptRetryIsBoundedAndNeverPublishesFailureOrStockRestoration() {
+        payment.setStatus("SUCCESS_PENDING_ORDER");payment.setProviderSuccessReceived(true);
+        java.time.LocalDateTime time=java.time.LocalDateTime.now();
+        for(int i=0;i<8;i++) service.recoverPayment("TXN",time.plusHours(i));
+        assertThat(payment.getRecoveryAttempts()).isEqualTo(5);assertThat(payment.getStatus()).isEqualTo("RECONCILIATION_REQUIRED");
+        verify(kafka,times(5)).append(eq("online-payment-received-topic"),eq("O"),any());verify(kafka,never()).append(eq("payment-failed-topic"),anyString(),any());
+    }
+
 }
