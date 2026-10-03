@@ -21,6 +21,12 @@ public class UserSeeder implements CommandLineRunner {
     @org.springframework.beans.factory.annotation.Value("${app.seed-admin.password:admin123456@}")
     private String adminPassword;
 
+    @org.springframework.beans.factory.annotation.Value("${app.seed-admin.username:admin}")
+    private String adminUsername;
+
+    @org.springframework.beans.factory.annotation.Value("${app.seed-admin.email:admin@example.com}")
+    private String adminEmail;
+
     @Override
     public void run(String... args) {
         log.info("🛡️ Đang kiểm tra tài khoản ADMIN...");
@@ -28,8 +34,6 @@ public class UserSeeder implements CommandLineRunner {
     }
 
     private void seedAdminUser() {
-        String adminUsername = "admin";
-        String adminEmail = "admin@example.com";
         String roleAdmin = "admin";
         String roleUser = "user";
 
@@ -49,28 +53,26 @@ public class UserSeeder implements CommandLineRunner {
                     .fullName("System Administrator")
                     .build();
             keycloakId = keycloakService.createUserInKeycloak(adminReq);
+            if (!keycloakId.equals(keycloakService.getKeycloakIdByUsername(adminUsername))) {
+                throw new IllegalStateException("Created bootstrap identity could not be verified");
+            }
         } else {
             log.info("Admin đã tồn tại trên Keycloak (ID: {})", keycloakId);
         }
 
-        // 3. Gán quyền ADMIN cho user này (Quan trọng!)
-        try {
-            keycloakService.assignRealmRoleToUser(keycloakId, roleAdmin);
-            keycloakService.assignRealmRoleToUser(keycloakId, roleUser);
-        } catch (Exception e) {
-            log.warn("Lỗi khi gán role: " + e.getMessage());
+        User existingByEmail = userRepository.findByEmail(adminEmail).orElse(null);
+        if (existingByEmail != null && !keycloakId.equals(existingByEmail.getKeycloakId())) {
+            throw new IllegalStateException("Bootstrap profile conflicts with an existing identity; operator review required");
         }
+
+        keycloakService.assignRealmRoleToUser(keycloakId, roleAdmin);
+        keycloakService.assignRealmRoleToUser(keycloakId, roleUser);
 
         // 4. Đồng bộ vào Database MySQL (Quan trọng nhất)
         // Kiểm tra xem trong DB đã có user với keycloakId này chưa
         if (!userRepository.findByKeycloakId(keycloakId).isPresent()) {
             // Nếu chưa có, hoặc ID bị lệch -> Xóa user cũ (nếu trùng email) và tạo lại
             // (Đoạn này xử lý trường hợp database cũ lưu ID rác)
-            User existingByEmail = userRepository.findByEmail(adminEmail).orElse(null);
-            if (existingByEmail != null) {
-                userRepository.delete(existingByEmail);
-                log.info("♻️ Đã xóa Admin cũ trong DB do sai ID.");
-            }
 
             User adminUser = User.builder()
                     .keycloakId(keycloakId) // Lưu ID thật từ Keycloak

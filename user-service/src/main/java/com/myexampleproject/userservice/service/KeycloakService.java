@@ -96,18 +96,24 @@ public class KeycloakService {
     }
 
     private boolean userExists(String username, String token) {
-        WebClient client = getClient(token);
+        return findUsersByExactUsername(username, token).stream()
+                .anyMatch(user -> username.equals(user.path("username").asText()));
+    }
 
-        List<JsonNode> users = client.get()
+    private List<JsonNode> findUsersByExactUsername(String username, String token) {
+        if (username == null || username.isBlank()) throw new IllegalArgumentException("Username is required");
+        List<JsonNode> users = getClient(token).get()
                 .uri(uriBuilder -> uriBuilder.path("/users")
                         .queryParam("username", username)
+                        .queryParam("exact", true)
                         .build())
                 .retrieve()
                 .bodyToFlux(JsonNode.class)
                 .collectList()
                 .block(Duration.ofSeconds(10));
 
-        return users != null && !users.isEmpty();
+        if (users == null) throw new IllegalStateException("Keycloak identity lookup returned no response");
+        return users;
     }
 
     public String createUserInKeycloak(UserRequest req) {
@@ -204,20 +210,14 @@ public class KeycloakService {
     // 1. Hàm lấy ID của user dựa trên username (Để check xem admin có chưa)
     public String getKeycloakIdByUsername(String username) {
         String token = getAdminAccessToken();
-        WebClient client = getClient(token);
-        List<JsonNode> users = client.get()
-                .uri(uriBuilder -> uriBuilder.path("/users")
-                        .queryParam("username", username)
-                        .build())
-                .retrieve()
-                .bodyToFlux(JsonNode.class)
-                .collectList()
-                .block(Duration.ofSeconds(10));
-
-        if (users != null && !users.isEmpty()) {
-            return users.get(0).get("id").asText();
+        List<JsonNode> users = findUsersByExactUsername(username, token);
+        if (users.isEmpty()) return null;
+        // Fail closed even if an upstream provider ignores exact=true.
+        if (users.size() != 1 || !username.equals(users.getFirst().path("username").asText())
+                || users.getFirst().path("id").asText().isBlank()) {
+            throw new IllegalStateException("Ambiguous or mismatching bootstrap identity");
         }
-        return null;
+        return users.getFirst().path("id").asText();
     }
 
     // 2. Hàm tạo Role nếu chưa tồn tại (Đảm bảo role ADMIN luôn có)
