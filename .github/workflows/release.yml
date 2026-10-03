@@ -1,0 +1,81 @@
+name: Publish backend production images
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable release tag (empty uses sha-COMMIT)
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/production-ready-final'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '24.0.2'
+          cache: maven
+      - run: mvn -B -ntp clean verify
+  images:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - service: api-gateway
+          dockerfile: Dockerfile
+        - service: discovery-server
+          dockerfile: Dockerfile
+        - service: product-service
+          dockerfile: Dockerfile
+        - service: inventory-service
+          dockerfile: Dockerfile
+        - service: cart-service
+          dockerfile: Dockerfile
+        - service: order-service
+          dockerfile: Dockerfile
+        - service: payment-service
+          dockerfile: Dockerfile
+        - service: user-service
+          dockerfile: Dockerfile
+        - service: notification-service
+          dockerfile: Dockerfile
+        - service: keycloak
+          dockerfile: deploy/keycloak/Dockerfile
+        - service: reverse-proxy
+          dockerfile: deploy/nginx/Dockerfile
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - name: Validate release tag and namespace
+        id: release
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          tag=${REQUESTED_TAG:-sha-$GITHUB_SHA}
+          [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ && "$tag" != latest ]] || exit 2
+          printf 'tag=%s\nnamespace=ghcr.io/%s\n' "$tag" "${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: SERVICE=${{ matrix.service }}
+          push: true
+          tags: ${{ steps.release.outputs.namespace }}/${{ matrix.service }}:${{ steps.release.outputs.tag }}
+          provenance: mode=max
+          sbom: true

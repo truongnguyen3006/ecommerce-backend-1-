@@ -1,0 +1,21 @@
+groups:
+  - name: project1-recovery
+    rules:
+      - alert: TransactionalOutboxStalled
+        expr: outbox_oldest_pending_seconds > 120
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: 'Outbox backlog for {{ $labels.instance }} requires investigation'
+      - alert: TransactionalOutboxPublishFailures
+        expr: increase(outbox_publish_failures_total[5m]) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Kafka publication retries at {{ $labels.instance }}'
+      - alert: ServiceMetricsUnavailable
+        expr: up{job="spring-services"} == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Service scrape failed for {{ $labels.instance }}'

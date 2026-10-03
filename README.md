@@ -6,6 +6,11 @@ Batch 1 trên `project1-recovery` bổ sung validation, phân trang/tìm kiếm 
 
 Trọng tâm của project không phải là hoàn thiện toàn bộ nghiệp vụ ecommerce cho production, mà là xây dựng một hệ thống đủ thực tế để thử nghiệm cách các microservice, cache, database, Kafka và API Gateway phối hợp dưới tải đồng thời.
 
+
+## Production-oriented release
+
+Nhánh `production-ready-final` bổ sung bản vá P0, transactional outbox và cấu hình production tách riêng. Bắt đầu với [DEPLOYMENT.md](DEPLOYMENT.md), [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md), [BACKUP_RESTORE.md](BACKUP_RESTORE.md) và [hướng dẫn đối soát/outbox](docs/production-recovery.md). Kết quả kiểm định hiện tại nằm trong `PROJECT1_PRODUCTION_READY_FINAL_REPORT.md`; benchmark lịch sử bên dưới không phải chứng nhận deployment production. Inventory/Notification khởi chạy một replica, Kafka một node; vẫn cần kiểm chứng Docker và dịch vụ ngoài trên môi trường thật.
+
 ## Kết quả nổi bật
 
 | Kịch bản | Tải kiểm thử | Mục tiêu | Kết quả chính |
