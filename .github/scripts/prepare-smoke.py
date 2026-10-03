@@ -28,7 +28,9 @@ for key, value in values.items():
         values[key] = value.replace('shop.example.invalid', 'ci-app.example.com').replace('auth.example.invalid', 'ci-auth.example.com')
 values.update(COMPOSE_PROJECT_NAME='project1-ci-'+sha[:12], IMAGE_NAMESPACE='project1-validation',
               IMAGE_TAG=sha, FRONTEND_SOURCE='./frontend-ci', TRACING_SAMPLE_RATE='0',
-              KAFKA_CLUSTER_ID=base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='))
+              KAFKA_CLUSTER_ID=base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='),
+              VNPAY_TMN_CODE='FIXTURE1', VNPAY_SECRET_KEY=secrets.token_hex(32),
+              VNPAY_API_URL='https://provider.example.test/payment')
 if module.validate(values):
     raise SystemExit('Generated isolated fixture failed configuration validation.')
 target = root/'.env.production.ci'

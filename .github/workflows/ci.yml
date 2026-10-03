@@ -23,6 +23,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes redis-server
       - name: Verify all modules and self-contained tests
         run: mvn -B -ntp clean verify
+      - name: Verify identity lifecycle against an owned Keycloak 26.8.0 fixture
+        run: |
+          curl --fail --silent --show-error --location https://github.com/keycloak/keycloak/releases/download/26.8.0/keycloak-26.8.0.tar.gz --output "$RUNNER_TEMP/keycloak-26.8.0.tar.gz"
+          python3 .github/scripts/run-keycloak-lifecycle.py "$RUNNER_TEMP/keycloak-26.8.0.tar.gz"
       - name: Check deployment scripts
         run: |
           for script in scripts/*.sh deploy/mysql/*.sh deploy/redis/*.sh deploy/nginx/*.sh; do bash -n "$script"; done
@@ -53,7 +57,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: truongnguyen3006/ecommerce-frontend-1-
-          ref: 5b3be4d6dfb0a588df11d3c5160479b7a1496fdd
+          ref: a68720c7d87dc239e96f3483b9a0c6a4b15158ea
           path: frontend-ci
           persist-credentials: false
       - name: Build the paired frontend for disposable stack validation
@@ -69,9 +73,10 @@ jobs:
           scripts/compose-prod.sh -f .github/runtime/smoke-override.json config --quiet
           scripts/compose-prod.sh -f .github/runtime/smoke-override.json up --no-build --pull missing --detach --wait --wait-timeout 600
           scripts/smoke-production.sh
-          scripts/compose-prod.sh stop api-gateway product-service inventory-service cart-service order-service payment-service user-service notification-service discovery-server keycloak
-          scripts/backup-mysql.sh mysql "$RUNNER_TEMP/project1-ci-business.sql"
-          scripts/backup-mysql.sh keycloak-db "$RUNNER_TEMP/project1-ci-keycloak.sql"
+      - name: Validate business invariants, controlled restarts and isolated coordinated restore
+        env:
+          PRODUCTION_ENV_FILE: ${{ github.workspace }}/.env.production.ci
+        run: python3 .github/scripts/validate-business.py
       - name: Show status and stop only the disposable CI project
         if: always()
         env:
@@ -80,7 +85,7 @@ jobs:
           if [ -f "$PRODUCTION_ENV_FILE" ]; then
             scripts/compose-prod.sh ps --all
             if [ "${{ job.status }}" != success ]; then
-              scripts/compose-prod.sh logs --no-color --tail 120 api-gateway zipkin reverse-proxy 2>&1 | python3 -c 'import re,sys; print(re.sub(r"[a-fA-F0-9]{64}", "[redacted]", sys.stdin.read()))'
+              scripts/compose-prod.sh logs --no-color --tail 100 keycloak user-service product-service inventory-service order-service payment-service cart-service api-gateway zipkin reverse-proxy 2>&1 | python3 -c 'import re,sys; print(re.sub(r"[a-fA-F0-9]{64}", "[redacted]", sys.stdin.read()))'
             fi
             scripts/compose-prod.sh down --timeout 30
           fi

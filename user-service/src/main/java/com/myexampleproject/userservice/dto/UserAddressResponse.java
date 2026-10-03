@@ -16,4 +16,9 @@ public class UserAddressResponse {
     private String recipientPhone;
     private String addressLine;
     private boolean isDefault;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("isDefault")
+    public boolean isDefault() {
+        return isDefault;
+    }
 }

@@ -70,17 +70,22 @@ public class KeycloakService {
     public void updateUserInKeycloak(String keycloakId, Map<String, Object> updates){
         String token = getAdminAccessToken();
         WebClient client = getClient(token);
-        if(updates.containsKey("attributes")) {
-            JsonNode current=client.get().uri("/users/{id}",keycloakId).retrieve().bodyToMono(JsonNode.class).block(Duration.ofSeconds(10));
-            if(current==null) throw new IllegalStateException("Identity response missing");
-            var merged=new java.util.HashMap<String,Object>();
-            current.path("attributes").fields().forEachRemaining(e -> merged.put(e.getKey(),e.getValue()));
-            ((Map<String,Object>)updates.get("attributes")).forEach((name,value) -> {if(!name.equals("project1ProvisioningId")) merged.put(name,value instanceof List<?> ? value : List.of(value));});
-            updates=new java.util.HashMap<>(updates);updates.put("attributes",merged);
-        }
+        JsonNode current=client.get().uri("/users/{id}",keycloakId).retrieve().bodyToMono(JsonNode.class).block(Duration.ofSeconds(10));
+        if(current==null) throw new IllegalStateException("Identity response missing");
+        // Admin PUT is a replacement for managed profile values. Retain omitted core fields explicitly.
+        Map<String,Object> body=new java.util.HashMap<>();
+        for(String field:List.of("username","email","firstName","lastName","enabled","emailVerified","requiredActions"))
+            if(current.has(field)) body.put(field,current.get(field));
+        body.putAll(updates);
+        var attributes=new java.util.HashMap<String,Object>();
+        current.path("attributes").fields().forEachRemaining(e -> attributes.put(e.getKey(),e.getValue()));
+        if(updates.get("attributes") instanceof Map<?,?> changed) changed.forEach((name,value) -> {
+            if(name instanceof String attribute && !attribute.equals("project1ProvisioningId")) attributes.put(attribute,value instanceof List<?> ? value : List.of(value));
+        });
+        body.put("attributes",attributes);
         client.put()
                 .uri("/users/{id}", keycloakId)
-                .bodyValue(updates)
+                .bodyValue(body)
                 .retrieve()
                 .toBodilessEntity()
                 .block(Duration.ofSeconds(10));

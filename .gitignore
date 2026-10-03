@@ -76,3 +76,4 @@ deploy/keycloak/runtime/
 backups/
 
 **/__pycache__/
+.github/runtime/
