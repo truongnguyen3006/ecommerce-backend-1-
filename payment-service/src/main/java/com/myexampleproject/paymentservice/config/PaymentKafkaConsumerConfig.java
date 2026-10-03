@@ -66,11 +66,26 @@ public class PaymentKafkaConsumerConfig {
 
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, Object> paymentKafkaListenerContainerFactory() {
+        return listenerFactory(paymentConsumerFactory());
+    }
 
+    @Bean
+    public ConsumerFactory<String, Object> onlinePaymentDecisionConsumerFactory() {
+        Map<String,Object> props = new HashMap<>(paymentConsumerFactory().getConfigurationProperties());
+        props.put("json.value.type", com.myexampleproject.common.event.OnlinePaymentDecisionEvent.class);
+        return new DefaultKafkaConsumerFactory<>(props);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Object> onlinePaymentDecisionKafkaListenerContainerFactory() {
+        return listenerFactory(onlinePaymentDecisionConsumerFactory());
+    }
+
+    private ConcurrentKafkaListenerContainerFactory<String, Object> listenerFactory(ConsumerFactory<String,Object> consumerFactory) {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
 
-        factory.setConsumerFactory(paymentConsumerFactory());
+        factory.setConsumerFactory(consumerFactory);
         factory.setConcurrency(3);
         factory.setBatchListener(true);
 

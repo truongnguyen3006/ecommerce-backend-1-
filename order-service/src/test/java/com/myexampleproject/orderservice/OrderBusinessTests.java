@@ -12,7 +12,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
 import org.springframework.data.redis.core.*;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.*;
 
 class OrderBusinessTests {
     OrderRepository repository=mock(OrderRepository.class);
-    KafkaTemplate<String,Object> kafka=mock(KafkaTemplate.class);
+    JdbcOutbox kafka=mock(JdbcOutbox.class);
     RedisTemplate<String,Object> redis=mock(RedisTemplate.class);
     HashOperations<String,Object,Object> hashes=mock(HashOperations.class);
     ValueOperations<String,Object> values=mock(ValueOperations.class);
@@ -45,7 +45,6 @@ class OrderBusinessTests {
         when(hashes.entries(anyString())).thenAnswer(a -> new HashMap<>(state));
         when(values.setIfAbsent(anyString(),any(),any(java.time.Duration.class))).thenAnswer(a -> requests.putIfAbsent(a.getArgument(0),a.getArgument(1))==null);
         when(values.get(anyString())).thenAnswer(a -> requests.get(a.getArgument(0)));
-        when(kafka.send(anyString(),anyString(),any())).thenReturn(CompletableFuture.completedFuture(null));
         when(catalog.find(anyString())).thenAnswer(a -> new ProductCatalogClient.CatalogItem(a.getArgument(0),"Product",BigDecimal.TEN,null,"Red","40",true));
         doAnswer(a -> { ((Consumer)a.getArgument(0)).accept(null);return null; }).when(transactions).executeWithoutResult(any());
     }
@@ -70,8 +69,8 @@ class OrderBusinessTests {
     @Test void invalidOrderQuantityIsRejected() {assertThatThrownBy(() -> service.placeOrder(OrderRequest.builder().items(List.of(new OrderLineItemRequest("SKU1",0))).build(),"A")).isInstanceOf(ResponseStatusException.class);verifyNoInteractions(kafka);}
     @Test void insufficientInventoryWaitsForAllItemsAndRestoresOnlySuccessfulDeductionsOnce() {
         Order o=order("PENDING");result("SKU2",1,false);assertThat(o.getStatus()).isEqualTo("PENDING");result("SKU1",2,true);assertThat(o.getStatus()).isEqualTo("FAILED");result("SKU1",2,true);
-        verify(kafka,times(1)).send(eq("inventory-adjustment-topic"),eq("SKU1"),argThat(e -> ((InventoryAdjustmentEvent)e).getAdjustmentQuantity()==2));
-        verify(kafka,never()).send(eq("inventory-adjustment-topic"),eq("SKU2"),any());
+        verify(kafka,times(1)).append(eq("inventory-adjustment-topic"),eq("SKU1"),argThat(e -> ((InventoryAdjustmentEvent)e).getAdjustmentQuantity()==2));
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),eq("SKU2"),any());
     }
     @Test void duplicateInventoryResultCannotCompleteOrderEarly() {Order o=order("PENDING");result("SKU1",2,true);result("SKU1",2,true);assertThat(o.getStatus()).isEqualTo("PENDING");result("SKU2",1,true);assertThat(o.getStatus()).isEqualTo("VALIDATED");}
     @Test void cannotReadAnotherUsersOrderOrInternalPaymentContext() {
@@ -79,7 +78,41 @@ class OrderBusinessTests {
         assertThatThrownBy(() -> service.getPaymentContext("O","B",false)).isInstanceOf(ResponseStatusException.class);
         assertThat(service.getOrderDetails("O","A",false).getUserId()).isEqualTo("A");
     }
-    @Test void completedOrderCannotBeCancelled() {order("COMPLETED");assertThatThrownBy(() -> service.cancelOrder("O","A",false,null)).isInstanceOf(ResponseStatusException.class);verify(kafka,never()).send(eq("inventory-adjustment-topic"),anyString(),any());}
-    @Test void cancellingPaymentFailedOrderDoesNotRestockAgain() {Order o=order("PAYMENT_FAILED");service.cancelOrder("O","A",false,"Cancel");assertThat(o.getStatus()).isEqualTo("CANCELLED");verify(kafka,never()).send(eq("inventory-adjustment-topic"),anyString(),any());}
+    @Test void completedOrderCannotBeCancelled() {order("COMPLETED");assertThatThrownBy(() -> service.cancelOrder("O","A",false,null)).isInstanceOf(ResponseStatusException.class);verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());}
+    @Test void cancellingPaymentFailedOrderDoesNotRestockAgain() {Order o=order("PAYMENT_FAILED");service.cancelOrder("O","A",false,"Cancel");assertThat(o.getStatus()).isEqualTo("CANCELLED");verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());}
     @Test void paidEventCannotReviveCancelledOrder() {Order o=order("CANCELLED");service.handleOrderEvents(List.of(event("payment-processed-topic",new PaymentProcessedEvent("O","P"))));assertThat(o.getStatus()).isEqualTo("CANCELLED");}
+    void receipt(String ref) { service.handleOrderEvents(List.of(event("online-payment-received-topic", new OnlinePaymentReceivedEvent("O",ref,BigDecimal.valueOf(30))))); }
+    @Test void issuedPaymentCannotBeCancelledAndCallbackCompletesWithoutReleasingStock() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");service.beginOnlinePayment("O","A","TXN");
+        assertThatThrownBy(() -> service.cancelOrder("O","A",false,null)).isInstanceOf(ResponseStatusException.class);
+        receipt("TXN");receipt("TXN");assertThat(o.getStatus()).isEqualTo("COMPLETED");assertThat(o.isPaymentReconciliationRequired()).isFalse();
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+    @Test void committedReceiptWithDelayedOrderConsumptionStillBlocksCancellation() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");service.beginOnlinePayment("O","A","TXN");
+        // Payment has committed its receipt, but the order consumer has not run yet.
+        assertThatThrownBy(() -> service.cancelOrder("O","A",false,null)).isInstanceOf(ResponseStatusException.class);
+        receipt("TXN");assertThat(o.getStatus()).isEqualTo("COMPLETED");
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+    @Test void cancellationWinningBeforeAttemptPreventsUrlAndLateLegacyMoneyIsReconciled() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");service.cancelOrder("O","A",false,null);
+        assertThatThrownBy(() -> service.beginOnlinePayment("O","A","TXN")).isInstanceOf(ResponseStatusException.class);
+        receipt("OLD-TXN");assertThat(o.getStatus()).isEqualTo("CANCELLED");assertThat(o.isPaymentReconciliationRequired()).isTrue();
+        verify(kafka).append(eq("online-payment-decision-topic"),eq("O"),argThat(e -> !((OnlinePaymentDecisionEvent)e).isAccepted()));
+        verify(kafka,times(2)).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
+    @Test void otherOwnerCannotStartPaymentOrCancel() {
+        Order o=order("VALIDATED");o.setPaymentMethod("VNPAY");
+        assertThatThrownBy(() -> service.beginOnlinePayment("O","B","TXN")).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.cancelOrder("O","B",false,null)).isInstanceOf(ResponseStatusException.class);
+        assertThat(o.getPaymentAttemptId()).isNull();verifyNoInteractions(kafka);
+    }
+    @Test void terminalOrdersAreNeverReopenedByLateMoney() {
+        for (String status : List.of("CANCELLED","FAILED","PAYMENT_FAILED")) {
+            Order o=order(status);o.setPaymentMethod("VNPAY");receipt("TXN");
+            assertThat(o.getStatus()).isEqualTo(status);assertThat(o.isPaymentReconciliationRequired()).isTrue();
+        }
+        verify(kafka,never()).append(eq("inventory-adjustment-topic"),anyString(),any());
+    }
 }

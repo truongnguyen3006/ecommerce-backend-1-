@@ -72,6 +72,17 @@ public class OrderController {
         return orderService.getPaymentContext(orderNumber, extractUserId(jwt), isAdmin(jwt));
     }
 
+    @PostMapping("/internal/{orderNumber}/payment-attempt")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void beginOnlinePayment(@PathVariable String orderNumber,
+                                   @Valid @RequestBody BeginOnlinePaymentRequest request,
+                                   @AuthenticationPrincipal Jwt jwt) {
+        orderService.beginOnlinePayment(orderNumber, extractUserId(jwt), request.txnRef());
+    }
+
+    public record BeginOnlinePaymentRequest(@jakarta.validation.constraints.NotBlank
+                                           @jakarta.validation.constraints.Size(max=100) String txnRef) {}
+
     private String extractUserId(Jwt jwt) {
         if (jwt == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Bạn cần đăng nhập");

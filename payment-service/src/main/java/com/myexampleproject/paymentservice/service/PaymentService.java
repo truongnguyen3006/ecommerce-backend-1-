@@ -19,7 +19,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
+import com.myexampleproject.common.event.OnlinePaymentReceivedEvent;
+import com.myexampleproject.common.event.OnlinePaymentDecisionEvent;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -45,7 +48,8 @@ import org.springframework.kafka.listener.BatchListenerFailedException;
 @RequiredArgsConstructor
 @Slf4j
 public class PaymentService {
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final JdbcOutbox outbox;
+    private final TransactionTemplate transactions;
     private final ObjectMapper objectMapper;
     private final PaymentTransactionRepository paymentTransactionRepository;
     private final VNPayConfig vnPayConfig;
@@ -68,6 +72,7 @@ public class PaymentService {
                 OrderValidatedEvent event = objectMapper.convertValue(record.value(), OrderValidatedEvent.class);
                 log.info("Received OrderValidatedEvent for Order {}. Processing mock/COD payment...", event.getOrderNumber());
 
+                transactions.executeWithoutResult(tx -> {
                 boolean paymentSuccess = processPayment(event);
                 if (paymentSuccess) {
                     String paymentId = "COD-" + event.getOrderNumber();
@@ -79,6 +84,7 @@ public class PaymentService {
                     publish("payment-failed-topic", event.getOrderNumber(), failedEvent);
                     log.warn("Payment FAILED for Order {}. Reason: {}", event.getOrderNumber(), failedEvent.getReason());
                 }
+                });
             } catch (Exception e) {
                 throw new BatchListenerFailedException("Payment event processing failed", e, record);
             }
@@ -114,24 +120,21 @@ public class PaymentService {
         try { context.getTotalPrice().multiply(BigDecimal.valueOf(100)).toBigIntegerExact(); }
         catch (ArithmeticException ex) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Order amount has unsupported precision"); }
 
-        Optional<PaymentTransaction> existingOpt = paymentTransactionRepository.findByOrderNumber(context.getOrderNumber());
-        if (existingOpt.isPresent()) {
-            PaymentTransaction existing = existingOpt.get();
-            if ("SUCCESS".equalsIgnoreCase(existing.getStatus())) {
-                return mapToResponse(existing);
-            }
-            if ("PENDING".equalsIgnoreCase(existing.getStatus())
-                    && existing.getPaymentUrl() != null && !existing.getPaymentUrl().isBlank()) {
-                return mapToResponse(existing);
-            }
-        }
-
+        Optional<PaymentTransaction> existingOpt = paymentTransactionRepository.findByOrderNumberForUpdate(context.getOrderNumber());
         PaymentTransaction transaction = existingOpt.orElseGet(PaymentTransaction::new);
+        if (existingOpt.isPresent() && !"PENDING".equals(transaction.getStatus())) {
+            if (transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus())) return mapToResponse(transaction);
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Payment attempt is already terminal");
+        }
         transaction.setOrderNumber(context.getOrderNumber());
         transaction.setProvider("VNPAY");
         transaction.setStatus("PENDING");
-        transaction.setAmount(context.getTotalPrice() != null ? context.getTotalPrice() : BigDecimal.ZERO);
-        transaction.setTxnRef(buildTxnRef(context.getOrderNumber()));
+        transaction.setAmount(context.getTotalPrice());
+        if (transaction.getTxnRef() == null) transaction.setTxnRef(buildTxnRef(context.getOrderNumber()));
+        // Order owns the cancellation decision. This separate committed fence is conservative if our SQL later fails.
+        // Retrying creation reuses the same reference; it never clears the fence or releases stock on uncertainty.
+        beginOrderPayment(context.getOrderNumber(), transaction.getTxnRef(), bearerToken);
+        if (transaction.getPaymentUrl() != null && !transaction.getPaymentUrl().isBlank()) return mapToResponse(transaction);
 
         Map<String, String> params = buildVnpayParams(transaction, servletRequest);
         String hashData = VNPayUtil.buildHashData(params);
@@ -204,18 +207,46 @@ public class PaymentService {
         String responseCode = params.getOrDefault("vnp_ResponseCode", "99");
         String gatewayStatus = params.getOrDefault("vnp_TransactionStatus", responseCode);
         boolean success = "00".equals(responseCode) && "00".equals(gatewayStatus);
-        if ("SUCCESS".equals(transaction.getStatus())) return new PaymentReturnResult(transaction.getOrderNumber(), true, "Already confirmed");
-        if ("FAILED".equals(transaction.getStatus())) {
-            if (success) throw new ResponseStatusException(HttpStatus.CONFLICT, "Payment already failed; manual reconciliation required");
+        if (transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus()))
+            return new PaymentReturnResult(transaction.getOrderNumber(), true, "Already received");
+        if ("FAILED".equals(transaction.getStatus()) && !success)
             return new PaymentReturnResult(transaction.getOrderNumber(), false, "Payment already failed");
-        }
-        if (!"PENDING".equals(transaction.getStatus())) throw new ResponseStatusException(HttpStatus.CONFLICT, "Invalid payment state");
+        if (!Set.of("PENDING", "FAILED").contains(transaction.getStatus()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Invalid payment state");
         transaction.setGatewayResponseCode(responseCode);transaction.setGatewayTransactionNo(params.get("vnp_TransactionNo"));
-        transaction.setStatus(success ? "SUCCESS" : "FAILED");transaction.setGatewayMessage(success ? "Thanh toán thành công" : "Thanh toán thất bại hoặc bị hủy");
+        transaction.setStatus(success ? "SUCCESS_PENDING_ORDER" : "FAILED");
+        transaction.setProviderSuccessReceived(success);
+        transaction.setGatewayMessage(success ? "Đã ghi nhận tiền; đang xác nhận quyết định đơn hàng" : "Thanh toán thất bại hoặc bị hủy");
         paymentTransactionRepository.save(transaction);
-        if (success) publish("payment-processed-topic", transaction.getOrderNumber(), new PaymentProcessedEvent(transaction.getOrderNumber(), txnRef));
+        if (success) publish("online-payment-received-topic", transaction.getOrderNumber(),
+                new OnlinePaymentReceivedEvent(transaction.getOrderNumber(), txnRef, transaction.getAmount()));
         else publish("payment-failed-topic", transaction.getOrderNumber(), new PaymentFailedEvent(transaction.getOrderNumber(), "VNPAY response=" + responseCode));
-        return new PaymentReturnResult(transaction.getOrderNumber(), success, success ? "OK" : "Payment failed");
+        return new PaymentReturnResult(transaction.getOrderNumber(), success, success ? "Receipt recorded" : "Payment failed");
+    }
+
+    @KafkaListener(topics="online-payment-decision-topic", groupId="payment-order-decision-group",
+            containerFactory="onlinePaymentDecisionKafkaListenerContainerFactory")
+    public void handleOnlinePaymentDecisions(List<ConsumerRecord<String,Object>> records) {
+        for (var record : records) try {
+            transactions.executeWithoutResult(tx -> {
+                OnlinePaymentDecisionEvent decision = objectMapper.convertValue(record.value(), OnlinePaymentDecisionEvent.class);
+                PaymentTransaction payment = paymentTransactionRepository.findByTxnRefForUpdate(decision.getTxnRef()).orElseThrow();
+                if (!decision.getOrderNumber().equals(payment.getOrderNumber())) throw new IllegalArgumentException("Payment decision reference mismatch");
+                if (!payment.isProviderSuccessReceived() && !"SUCCESS".equals(payment.getStatus()))
+                    throw new IllegalStateException("Payment receipt is not committed yet");
+                if ("RECONCILIATION_REQUIRED".equals(payment.getStatus())) return;
+                if (!decision.isAccepted()) {
+                    payment.setStatus("RECONCILIATION_REQUIRED");payment.setOrderDecisionReason(decision.getReason());
+                    payment.setGatewayMessage("Đã ghi nhận tiền; đơn hàng cần đối soát. Vui lòng liên hệ hỗ trợ.");
+                    paymentTransactionRepository.save(payment);
+                    log.error("Payment reconciliation required order={} reference={}", payment.getOrderNumber(), payment.getTxnRef());
+                } else if ("SUCCESS_PENDING_ORDER".equals(payment.getStatus())) {
+                    payment.setStatus("SUCCESS");payment.setOrderDecisionReason("ACCEPTED");payment.setGatewayMessage("Thanh toán và đơn hàng đã được xác nhận");
+                    paymentTransactionRepository.save(payment);
+                    publish("payment-processed-topic", payment.getOrderNumber(), new PaymentProcessedEvent(payment.getOrderNumber(), payment.getTxnRef()));
+                }
+            });
+        } catch (Exception ex) { throw new BatchListenerFailedException("Online payment decision failed", ex, record); }
     }
 
     private PaymentTransactionResponse mapToResponse(PaymentTransaction transaction) {
@@ -227,6 +258,7 @@ public class PaymentService {
                 .paymentUrl(transaction.getPaymentUrl())
                 .txnRef(transaction.getTxnRef())
                 .gatewayMessage(transaction.getGatewayMessage())
+                .providerSuccessReceived(transaction.isProviderSuccessReceived() || "SUCCESS".equals(transaction.getStatus()))
                 .build();
     }
 
@@ -252,10 +284,19 @@ public class PaymentService {
     }
 
     private String buildTxnRef(String orderNumber) {
-        String compactOrder = orderNumber.replaceAll("[^A-Za-z0-9]", "");
-        String suffix = String.valueOf(System.currentTimeMillis());
-        String seed = compactOrder.length() > 24 ? compactOrder.substring(0, 24) : compactOrder;
-        return (seed + suffix).substring(0, Math.min(seed.length() + suffix.length(), 50));
+        return "VNP-" + UUID.nameUUIDFromBytes(orderNumber.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void beginOrderPayment(String orderNumber, String txnRef, String bearerToken) {
+        HttpHeaders headers = new HttpHeaders();headers.setBearerAuth(bearerToken);
+        try {
+            restTemplate.exchange(orderServiceBaseUrl + "/api/order/internal/{orderNumber}/payment-attempt", HttpMethod.POST,
+                    new HttpEntity<>(Map.of("txnRef", txnRef), headers), Void.class, orderNumber);
+        } catch (HttpClientErrorException ex) {
+            throw new ResponseStatusException(ex.getStatusCode(), "Order cannot start this payment attempt");
+        } catch (RestClientException ex) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Order payment decision unavailable");
+        }
     }
 
     private void validatePaymentRequester(String requesterUserId, OrderPaymentContextResponse context) {
@@ -279,9 +320,7 @@ public class PaymentService {
     }
 
     private void publish(String topic, String key, Object event) {
-        try { kafkaTemplate.send(topic, key, event).get(10, TimeUnit.SECONDS); }
-        catch (InterruptedException ex) { Thread.currentThread().interrupt();throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Payment publication interrupted"); }
-        catch (Exception ex) { throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Payment publication failed"); }
+        outbox.append(topic, key, event);
     }
 
     private void validateVnpayConfiguration() {

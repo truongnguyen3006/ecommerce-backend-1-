@@ -9,6 +9,9 @@ import java.util.Optional;
 
 public interface PaymentTransactionRepository extends JpaRepository<PaymentTransaction, Long> {
     Optional<PaymentTransaction> findByOrderNumber(String orderNumber);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT p FROM PaymentTransaction p WHERE p.orderNumber = :orderNumber")
+    Optional<PaymentTransaction> findByOrderNumberForUpdate(@Param("orderNumber") String orderNumber);
     Optional<PaymentTransaction> findByTxnRef(String txnRef);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT p FROM PaymentTransaction p WHERE p.txnRef = :txnRef")

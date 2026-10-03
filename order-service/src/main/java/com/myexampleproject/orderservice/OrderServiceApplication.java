@@ -7,7 +7,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication
-@Import({ GlobalExceptionHandler.class })
+@Import({ GlobalExceptionHandler.class, com.myexampleproject.common.outbox.OutboxConfiguration.class })
+@org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {"com.myexampleproject.orderservice.model", "com.myexampleproject.common.outbox"})
 public class OrderServiceApplication {
 
 	public static void main(String[] args) {

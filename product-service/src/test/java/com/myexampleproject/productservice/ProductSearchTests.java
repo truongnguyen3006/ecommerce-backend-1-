@@ -10,7 +10,7 @@ import java.util.List;
 import org.springframework.data.domain.*;
 import static org.assertj.core.api.Assertions.*;
 
-@DataJpaTest(properties = {"spring.flyway.enabled=false", "spring.jpa.hibernate.ddl-auto=create-drop"})
+@DataJpaTest(properties = {"app.outbox.enabled=false", "spring.flyway.enabled=false", "spring.jpa.hibernate.ddl-auto=create-drop"})
 class ProductSearchTests {
     @Autowired ProductRepository repository;
     private void seed(String name, String category, String color, String size, int price) {

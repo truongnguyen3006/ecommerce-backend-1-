@@ -52,6 +52,12 @@ public class PaymentTransaction {
     @Column(length = 255)
     private String gatewayMessage;
 
+    @Column(nullable = false)
+    private boolean providerSuccessReceived;
+
+    @Column(length = 255)
+    private String orderDecisionReason;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

@@ -19,4 +19,5 @@ public class PaymentTransactionResponse {
     private String paymentUrl;
     private String txnRef;
     private String gatewayMessage;
+    private boolean providerSuccessReceived;
 }

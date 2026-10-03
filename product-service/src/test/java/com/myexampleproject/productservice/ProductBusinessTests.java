@@ -6,7 +6,7 @@ import com.myexampleproject.productservice.repository.*;
 import com.myexampleproject.productservice.service.ProductService;
 import com.myexampleproject.common.event.*;
 import org.junit.jupiter.api.*;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
 import org.springframework.web.server.ResponseStatusException;
 import java.math.BigDecimal;
 import java.util.*;
@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.*;
 class ProductBusinessTests {
     ProductRepository repository = mock(ProductRepository.class);
     ProductVariantRepository variants = mock(ProductVariantRepository.class);
-    KafkaTemplate<String,Object> kafka = mock(KafkaTemplate.class);
+    JdbcOutbox kafka = mock(JdbcOutbox.class);
     ProductService service = new ProductService(repository,kafka,variants);
     @Test void missingProductReturns404() {
         when(repository.findById(9L)).thenReturn(Optional.empty());
@@ -34,8 +34,8 @@ class ProductBusinessTests {
         when(repository.findById(1L)).thenReturn(Optional.of(p));when(repository.save(any())).thenAnswer(a -> a.getArgument(0));
         ProductResponse result = service.updateProduct(1L,ProductRequest.builder().name("New").build());
         assertThat(result.getVariants()).hasSize(1);assertThat(result.getVariants().getFirst().getGalleryImages()).isEmpty();
-        verify(kafka).send(eq("product-cache-update-topic"),eq("SKU"),any(ProductCacheEvent.class));
-        verify(kafka,never()).send(eq("product-created-topic"),anyString(),any());
+        verify(kafka).append(eq("product-cache-update-topic"),eq("SKU"),any(ProductCacheEvent.class));
+        verify(kafka,never()).append(eq("product-created-topic"),anyString(),any());
     }
     @Test void badPageRangeAndSortAreRejected() {
         assertThatThrownBy(() -> service.search(null,null,BigDecimal.TEN,BigDecimal.ONE,null,null,0,20,"id,asc")).isInstanceOf(ResponseStatusException.class);

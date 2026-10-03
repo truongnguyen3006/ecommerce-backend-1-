@@ -8,7 +8,7 @@ import com.myexampleproject.productservice.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
 import org.springframework.stereotype.Component;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,7 +23,7 @@ import java.util.List;
 public class ProductSeeder implements CommandLineRunner {
 
     private final ProductRepository productRepository;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final JdbcOutbox outbox;
 
     @Value("${app.seed-products.initial-stock:10000}")
     private int initialStock;
@@ -75,12 +75,10 @@ public class ProductSeeder implements CommandLineRunner {
 
 
 
-        log.info("Catalog initialization acknowledged for {} SKUs", variantCount);
+        log.info("Catalog initialization intents persisted for {} SKUs", variantCount);
     }
 
     private void send(String topic, String sku, Object event) {
-        try { kafkaTemplate.send(topic, sku, event).get(10, java.util.concurrent.TimeUnit.SECONDS); }
-        catch (InterruptedException ex) { Thread.currentThread().interrupt();throw new IllegalStateException("Catalog initialization interrupted", ex); }
-        catch (Exception ex) { throw new IllegalStateException("Catalog initialization was not acknowledged", ex); }
+        outbox.append(topic, sku, event);
     }
 }

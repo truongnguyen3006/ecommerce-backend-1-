@@ -15,7 +15,7 @@ import com.myexampleproject.productservice.model.ProductVariant;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,7 +41,7 @@ import java.util.Set;
 @Slf4j
 public class ProductService {
     private final ProductRepository productRepository;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final JdbcOutbox outbox;
     private final ProductVariantRepository variantRepository;
 
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
@@ -98,7 +98,7 @@ public class ProductService {
                         .skuCode(vReq.getSkuCode())
                         .initialQuantity(vReq.getInitialQuantity() == null ? 0 : vReq.getInitialQuantity())
                         .build();
-                kafkaTemplate.send("product-created-topic", vReq.getSkuCode(), inventoryEvent);
+                outbox.append("product-created-topic", vReq.getSkuCode(), inventoryEvent);
 
                 ProductCacheEvent cacheEvent = ProductCacheEvent.builder()
                         .skuCode(vReq.getSkuCode())
@@ -108,7 +108,7 @@ public class ProductService {
                         .color(vReq.getColor())
                         .size(vReq.getSize())
                         .build();
-                kafkaTemplate.send("product-cache-update-topic", vReq.getSkuCode(), cacheEvent);
+                outbox.append("product-cache-update-topic", vReq.getSkuCode(), cacheEvent);
             }
         }
 
@@ -187,7 +187,7 @@ public class ProductService {
                 requestMap.remove(sku);
             } else {
                 // DELETE: Nếu Frontend gửi danh sách biến thể nhưng thiếu SKU này -> Xóa
-                kafkaTemplate.send("product-cache-update-topic", sku, null);
+                outbox.append("product-cache-update-topic", sku, null);
                 iterator.remove();
             }
         }
@@ -222,7 +222,7 @@ public class ProductService {
         Product savedProduct = productRepository.save(product);
         for (ProductVariantRequest variant : request.getVariants()) {
             if (!oldSkus.contains(variant.getSkuCode())) {
-                kafkaTemplate.send("product-created-topic", variant.getSkuCode(), new ProductCreatedEvent(variant.getSkuCode(),
+                outbox.append("product-created-topic", variant.getSkuCode(), new ProductCreatedEvent(variant.getSkuCode(),
                         variant.getInitialQuantity() == null ? 0 : variant.getInitialQuantity()));
             }
         }
@@ -242,7 +242,7 @@ public class ProductService {
                     .color(v.getColor())
                     .size(v.getSize())
                     .build();
-            kafkaTemplate.send("product-cache-update-topic", v.getSkuCode(), cacheEvent);
+            outbox.append("product-cache-update-topic", v.getSkuCode(), cacheEvent);
 
         }
     }
@@ -272,7 +272,7 @@ public class ProductService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
         }
         Product product = productRepository.findById(id).orElseThrow();
-        product.getVariants().forEach(v -> kafkaTemplate.send("product-cache-update-topic", v.getSkuCode(), null));
+        product.getVariants().forEach(v -> outbox.append("product-cache-update-topic", v.getSkuCode(), null));
         productRepository.deleteById(id);
     }
 

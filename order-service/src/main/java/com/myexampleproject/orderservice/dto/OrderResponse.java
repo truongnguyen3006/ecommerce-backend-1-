@@ -31,4 +31,6 @@ public class OrderResponse {
     private String shippingAddressLine;
     private String cancelReason;
     private LocalDateTime cancelledAt;
+    private boolean onlinePaymentInFlight;
+    private boolean paymentReconciliationRequired;
 }

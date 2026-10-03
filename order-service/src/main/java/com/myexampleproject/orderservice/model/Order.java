@@ -55,4 +55,12 @@ public class Order {
     private String cancelReason;
 
     private LocalDateTime cancelledAt;
+
+    @Column(length = 100)
+    private String paymentAttemptId;
+    @Column(length = 100)
+    private String paymentReceivedRef;
+    @Column(nullable = false)
+    private boolean paymentReconciliationRequired;
+
 }

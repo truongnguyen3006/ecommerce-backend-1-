@@ -9,6 +9,16 @@ import org.springframework.kafka.config.TopicBuilder;
 public class KafkaConfig {
 
     @Bean
+    public NewTopic onlinePaymentReceivedTopic() {
+        return TopicBuilder.name("online-payment-received-topic").partitions(1).replicas(1).build();
+    }
+
+    @Bean
+    public NewTopic onlinePaymentDecisionTopic() {
+        return TopicBuilder.name("online-payment-decision-topic").partitions(1).replicas(1).build();
+    }
+
+    @Bean
     public NewTopic orderStatusTopic() {
         return TopicBuilder.name("order-status-topic")
                 .partitions(1)

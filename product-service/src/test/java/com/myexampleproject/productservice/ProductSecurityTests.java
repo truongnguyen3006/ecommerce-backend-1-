@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
-@WebMvcTest(ProductController.class)
+@WebMvcTest(value=ProductController.class, properties="app.outbox.enabled=false")
 @Import({SecurityConfig.class,GlobalExceptionHandler.class})
 class ProductSecurityTests {
     @Autowired MockMvc mvc;

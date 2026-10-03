@@ -15,7 +15,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.myexampleproject.common.outbox.JdbcOutbox;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,7 +56,7 @@ public class OrderService {
     private final MeterRegistry meterRegistry;
 
     private final OrderRepository orderRepository;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final JdbcOutbox outbox;
     private final ObjectMapper objectMapper;
     private final ProductCatalogClient catalog;
     private final TransactionTemplate transactions;
@@ -119,15 +119,14 @@ public class OrderService {
     private void placeWithNumber(OrderRequest request, String userId, String orderNumber) {
         validateItems(request.getItems());
         request.getItems().forEach(item -> catalog.find(item.getSkuCode()));
-        publish("order-placed-topic", orderNumber, new OrderPlacedEvent(orderNumber, userId, request.getItems(), normalizePaymentMethod(request.getPaymentMethod()),
+        transactions.executeWithoutResult(tx -> publish("order-placed-topic", orderNumber,
+                new OrderPlacedEvent(orderNumber, userId, request.getItems(), normalizePaymentMethod(request.getPaymentMethod()),
                 safeText(request.getShippingAddressLabel(),128), safeText(request.getShippingRecipientName(),128),
-                safeText(request.getShippingRecipientPhone(),32), safeText(request.getShippingAddressLine(),512)));
+                safeText(request.getShippingRecipientPhone(),32), safeText(request.getShippingAddressLine(),512))));
     }
 
     private void publish(String topic, String key, Object event) {
-        try { kafkaTemplate.send(topic, key, event).get(10, TimeUnit.SECONDS); }
-        catch (InterruptedException ex) { Thread.currentThread().interrupt();throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Event publication interrupted"); }
-        catch (Exception ex) { throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Event publication failed"); }
+        outbox.append(topic, key, event);
     }
 
     // ==========================================================
@@ -222,6 +221,8 @@ public class OrderService {
                 .shippingAddressLine(order.getShippingAddressLine())
                 .cancelReason(order.getCancelReason())
                 .cancelledAt(order.getCancelledAt())
+                .onlinePaymentInFlight(order.getPaymentAttemptId() != null && "VALIDATED".equals(order.getStatus()))
+                .paymentReconciliationRequired(order.isPaymentReconciliationRequired())
                 .build();
     }
 
@@ -276,7 +277,8 @@ public class OrderService {
                     "order-placed-topic",
                     "order-failed-topic",
                     "payment-processed-topic",
-                    "payment-failed-topic"
+                    "payment-failed-topic",
+                    "online-payment-received-topic"
             },
             containerFactory = "kafkaListenerContainerFactory" // <-- Dùng factory chung
     )
@@ -287,6 +289,7 @@ public class OrderService {
                     case "order-placed-topic" -> handleOrderPlacement(objectMapper.convertValue(record.value(), OrderPlacedEvent.class));
                     case "order-failed-topic" -> handleOrderFailure(objectMapper.convertValue(record.value(), OrderFailedEvent.class));
                     case "payment-processed-topic" -> handlePaymentSuccess(objectMapper.convertValue(record.value(), PaymentProcessedEvent.class));
+                    case "online-payment-received-topic" -> handleOnlinePaymentReceived(objectMapper.convertValue(record.value(), OnlinePaymentReceivedEvent.class));
                     case "payment-failed-topic" -> handlePaymentFailure(objectMapper.convertValue(record.value(), PaymentFailedEvent.class));
                     default -> throw new IllegalArgumentException("Unexpected order event topic");
                 }
@@ -365,6 +368,32 @@ public class OrderService {
         }
     }
 
+    private void handleOnlinePaymentReceived(OnlinePaymentReceivedEvent receipt) {
+        Order order = orderRepository.findByOrderNumberForUpdate(receipt.getOrderNumber()).orElseThrow();
+        boolean sameReceipt = receipt.getTxnRef().equals(order.getPaymentReceivedRef());
+        boolean accepted = "COMPLETED".equals(order.getStatus()) && sameReceipt && !order.isPaymentReconciliationRequired();
+        if ("VALIDATED".equals(order.getStatus()) && "VNPAY".equals(order.getPaymentMethod())
+                && (order.getPaymentAttemptId() == null || order.getPaymentAttemptId().equals(receipt.getTxnRef()))
+                && order.getTotalPrice().compareTo(receipt.getAmount()) == 0 && !order.isPaymentReconciliationRequired()) {
+            order.setPaymentReceivedRef(receipt.getTxnRef());
+            order.setStatus("COMPLETED");
+            orderRepository.save(order);
+            publish("order-status-topic", order.getOrderNumber(), new OrderStatusEvent(order.getOrderNumber(), "COMPLETED"));
+            ordersCompletedCounter.increment();
+            accepted = true;
+        }
+        if (!accepted) {
+            order.setPaymentReconciliationRequired(true);
+            if (order.getPaymentReceivedRef() == null) order.setPaymentReceivedRef(receipt.getTxnRef());
+            orderRepository.save(order);
+            log.error("Online payment requires reconciliation order={} reference={} state={}",
+                    order.getOrderNumber(), receipt.getTxnRef(), order.getStatus());
+        }
+        // Same local transaction as the order decision. Duplicate receipts resend an idempotent acknowledgement.
+        publish("online-payment-decision-topic", order.getOrderNumber(), new OnlinePaymentDecisionEvent(
+                order.getOrderNumber(), receipt.getTxnRef(), accepted, accepted ? "ACCEPTED" : "ORDER_ALLOCATION_INCOMPATIBLE"));
+    }
+
     @Transactional
     protected void handlePaymentSuccess(PaymentProcessedEvent paymentProcessedEvent) {
         log.info("SUCCESS: Received PaymentProcessedEvent for Order {}. Payment ID: {}. Updating status...",
@@ -374,7 +403,8 @@ public class OrderService {
         Order order = orderRepository.findByOrderNumberForUpdate(paymentProcessedEvent.getOrderNumber())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + paymentProcessedEvent.getOrderNumber()));
 
-        if ("VALIDATED".equals(order.getStatus())) {
+        if ("VALIDATED".equals(order.getStatus()) && !order.isPaymentReconciliationRequired()) {
+            if ("VNPAY".equals(order.getPaymentMethod())) order.setPaymentReceivedRef(paymentProcessedEvent.getPaymentId());
             order.setStatus("COMPLETED");
             order.setCancelReason(null);
             order.setCancelledAt(null);
@@ -384,6 +414,11 @@ public class OrderService {
                     new OrderStatusEvent(order.getOrderNumber(), order.getStatus()));
             this.ordersCompletedCounter.increment();
         } else {
+            if ("VNPAY".equals(order.getPaymentMethod()) && !"COMPLETED".equals(order.getStatus())) {
+                order.setPaymentReconciliationRequired(true);orderRepository.save(order);
+                publish("online-payment-decision-topic", order.getOrderNumber(), new OnlinePaymentDecisionEvent(
+                        order.getOrderNumber(), paymentProcessedEvent.getPaymentId(), false, "LATE_LEGACY_PAYMENT"));
+            }
             log.warn("Received payment success for order {} but status was not PENDING (Status: {}).",
                     order.getOrderNumber(), order.getStatus());
         }
@@ -395,7 +430,7 @@ public class OrderService {
                 paymentFailedEvent.getOrderNumber(), paymentFailedEvent.getReason());
         Order order = orderRepository.findByOrderNumberForUpdate(paymentFailedEvent.getOrderNumber())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + paymentFailedEvent.getOrderNumber()));
-        if ("VALIDATED".equals(order.getStatus())) {
+        if ("VALIDATED".equals(order.getStatus()) && !order.isPaymentReconciliationRequired()) {
             order.setStatus("PAYMENT_FAILED");
             orderRepository.save(order);
             restockOrderItems(order, "COMPENSATION: Payment Failed for Order " + order.getOrderNumber());
@@ -441,6 +476,22 @@ public class OrderService {
     }
 
     @Transactional
+    public void beginOnlinePayment(String orderNumber, String requesterUserId, String txnRef) {
+        if (txnRef == null || txnRef.isBlank() || txnRef.length() > 100)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid payment reference");
+        Order order = orderRepository.findByOrderNumberForUpdate(orderNumber)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+        validateOrderAccess(order, requesterUserId, false);
+        if (!"VALIDATED".equals(order.getStatus()) || !"VNPAY".equals(order.getPaymentMethod())
+                || order.isPaymentReconciliationRequired())
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Order cannot start an online payment");
+        if (order.getPaymentAttemptId() != null && !txnRef.equals(order.getPaymentAttemptId()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Another payment attempt is already recorded");
+        order.setPaymentAttemptId(txnRef);
+        orderRepository.save(order);
+    }
+
+    @Transactional
     public OrderResponse cancelOrder(String orderNumber, String requesterUserId, boolean admin, String reason) {
         Order order = orderRepository.findByOrderNumberForUpdate(orderNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
@@ -452,6 +503,9 @@ public class OrderService {
                     "Chỉ có thể hủy đơn đã xác nhận hoặc thanh toán thất bại. Đơn đang ở trạng thái: " + order.getStatus());
         }
 
+        if (order.isPaymentReconciliationRequired() || ("VALIDATED".equals(order.getStatus()) && order.getPaymentAttemptId() != null)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "ONLINE_PAYMENT_IN_FLIGHT");
+        }
         if ("VALIDATED".equals(order.getStatus())) restockOrderItems(order, "CANCELLED: " + orderNumber);
         order.setStatus("CANCELLED");
         order.setCancelReason(safeText(reason, 255));
@@ -472,7 +526,7 @@ public class OrderService {
                     .reason(reasonPrefix + " | SKU=" + item.getSkuCode())
                     .build();
             publish("inventory-adjustment-topic", item.getSkuCode(), adjustmentEvent);
-            log.info("RESTOCK: Sent inventory adjustment for SKU {} (+{})", item.getSkuCode(), item.getQuantity());
+            log.info("RESTOCK: Persisted inventory adjustment intent for SKU {} (+{})", item.getSkuCode(), item.getQuantity());
         }
     }
 
