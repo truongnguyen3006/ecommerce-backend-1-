@@ -121,9 +121,9 @@ def status(order, target):
                        lambda data: data['status'] == target)
 
 
-def place(sku, quantity, method):
+def place(sku, quantity, method, items=None):
     key = str(uuid.uuid4())
-    body = {'items':[{'skuCode':sku,'quantity':quantity}], 'paymentMethod':method,
+    body = {'items':items or [{'skuCode':sku,'quantity':quantity}], 'paymentMethod':method,
             'shippingRecipientName':'Disposable fixture','shippingAddressLine':'Fixture address'}
     order = request('POST','/api/order',body,user_token,key,(202,))[1]['orderNumber']
     return order, key, body
@@ -257,6 +257,14 @@ try:
     await_value('authoritative payment decision',lambda:request('GET','/api/payment/order/'+online,token=user_token)[1],lambda p:p['status']=='SUCCESS')
     request('POST','/api/order/'+online+'/cancel',{},user_token,expected=(409,));stock(sku_a,9)
     passed('mock Return is read-only; signed IPN/duplicate acknowledgement and paid cancellation fence')
+    cancelled, _, _ = place(sku_a,1,'VNPAY',[{'skuCode':sku_a,'quantity':1},{'skuCode':sku_b,'quantity':1}])
+    status(cancelled,'VALIDATED');stock(sku_a,8);stock(sku_b,7)
+    request('POST','/api/order/'+cancelled+'/cancel',{},user_token)
+    request('POST','/api/order/'+cancelled+'/cancel',{},user_token,expected=(409,))
+    stock(sku_a,9);stock(sku_b,8)
+    failed, _, _ = place(sku_a,1,'COD',[{'skuCode':sku_a,'quantity':1},{'skuCode':sku_b,'quantity':1000}])
+    status(failed,'FAILED');stock(sku_a,9);stock(sku_b,8)
+    passed('multi-SKU cancellation and partial inventory rejection restore only actual deductions once')
     op = str(uuid.uuid4());adjustment = {'skuCode':sku_a,'adjustmentQuantity':3,'reason':'Disposable fixture'}
     request('POST','/api/inventory/adjust',adjustment,admin_token,op,(202,200))
     await_value('admin APPLIED',lambda:request('GET','/api/inventory/operations/'+op,token=admin_token)[1],lambda result:result['status']=='APPLIED')
@@ -293,12 +301,12 @@ try:
     passed('active payment restart/callback retry, inventory SIGKILL/RocksDB recovery and Redis AOF restart')
     # Replay only this fresh fixture's original stable INIT and CHECK outbox identities.
     sql('product-service',"UPDATE outbox_event SET publication_state='PENDING',next_attempt_at=UTC_TIMESTAMP(6) WHERE topic='product-created-topic' AND aggregate_key IN ('"+sku_a+"','"+sku_b+"')")
-    sql('order-service',"UPDATE outbox_event SET publication_state='PENDING',next_attempt_at=UTC_TIMESTAMP(6) WHERE topic='inventory-check-request-topic' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.orderNumber')) IN ('"+cod+"','"+delayed+"','"+online+"','"+second_online+"')")
+    sql('order-service',"UPDATE outbox_event SET publication_state='PENDING',next_attempt_at=UTC_TIMESTAMP(6) WHERE (topic='inventory-check-request-topic' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.orderNumber')) IN ('"+cod+"','"+delayed+"','"+online+"','"+second_online+"','"+cancelled+"','"+failed+"')) OR (topic='inventory-adjustment-topic' AND (JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason')) LIKE '%"+cancelled+"%' OR JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason')) LIKE '%"+failed+"%'))")
     for database in ('product-service','order-service','payment-service'):
         await_value('outbox drain '+database,lambda db=database:sql(db,"SELECT COUNT(*) FROM outbox_event WHERE publication_state<>'PUBLISHED'"),lambda count:count=='0')
     time.sleep(5)
     stock(sku_a,12);stock(sku_b,6)
-    passed('duplicate stable INIT/CHECK delivery conserves stock; all business outbox rows publish')
+    passed('duplicate stable INIT/CHECK/compensation delivery conserves stock; all business outbox rows publish')
     # A consistent boundary: stop writers and consumers, SQL dumps, then clean stopped volume snapshots.
     compose('stop','api-gateway','product-service','inventory-service','cart-service','order-service','payment-service','user-service','notification-service','discovery-server','keycloak')
     baseline = fingerprint()

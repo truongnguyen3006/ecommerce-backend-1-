@@ -20,6 +20,8 @@ The launcher verifies the official archive SHA256, owns a new loopback process/r
 
 Runtime testing found two narrow defects: Keycloak 26.8.0 rejects `unmanagedAttributePolicy: DISABLED` (disabled is represented by omission); its Admin PUT can erase omitted managed core profile fields. The template now omits that invalid enum and profile updates retain existing core fields and the admin-only provisioning marker. A serialization test also found the default-address response needed an explicit getter property name to emit only `isDefault`.
 
+The first Batch 6 Docker startup also exposed MySQL incompatibility in the new, unreleased SKU V4 migration: DATETIME(6) requires CURRENT_TIMESTAMP(6), and MySQL prohibits reading the INSERT target in a subquery. V4 now uses matching precision and a top-level anti-join. This migration was introduced by this task, has not been deployed to an owner environment, and was applied only to disposable fixtures. All 15 migration files from the starting checkpoint remain byte-identical; no existing database history/checksum is repaired. A disposable MySQL 8.4.10 SQL/backfill probe checks the new migration before image builds, followed by the actual Flyway/Hibernate production startup gate.
+
 ## Disposable Docker rehearsal
 
 Local Docker/Podman is unavailable. Backend GitHub CI builds all production images without publishing them and runs the existing production Compose stack on a disposable runner. The completed Batch 5 frontend is pinned. CI fixture configuration generates secrets; VNPay's URL is an unroutable fixture domain and is never contacted.
