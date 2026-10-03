@@ -27,3 +27,24 @@ jobs:
           python3 -m py_compile scripts/*.py
       - name: Validate production Compose model
         run: docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
+  images:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DOCKER_BUILDKIT: '1'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Build every production application image without publishing
+        shell: bash
+        run: |
+          for service in api-gateway discovery-server product-service inventory-service cart-service order-service payment-service user-service notification-service; do
+            docker build --file Dockerfile --build-arg "SERVICE=$service" --tag "project1-validation/$service:$GITHUB_SHA" .
+            test "$(docker image inspect --format '{{.Config.User}}' "project1-validation/$service:$GITHUB_SHA")" = '10001:10001'
+          done
+      - name: Build optimized Keycloak and ingress images without publishing
+        run: |
+          docker build --file deploy/keycloak/Dockerfile --tag "project1-validation/keycloak:$GITHUB_SHA" .
+          test "$(docker image inspect --format '{{.Config.User}}' "project1-validation/keycloak:$GITHUB_SHA")" = '1000'
+          docker build --file deploy/nginx/Dockerfile --tag "project1-validation/reverse-proxy:$GITHUB_SHA" .
+          test "$(docker image inspect --format '{{.Config.User}}' "project1-validation/reverse-proxy:$GITHUB_SHA")" = 'nginx'
