@@ -67,6 +67,7 @@ jobs:
           scripts/compose-prod.sh -f .github/runtime/smoke-override.json config --quiet
           scripts/compose-prod.sh -f .github/runtime/smoke-override.json up --no-build --pull missing --detach --wait --wait-timeout 600
           scripts/smoke-production.sh
+          scripts/compose-prod.sh stop api-gateway product-service inventory-service cart-service order-service payment-service user-service notification-service discovery-server keycloak
           scripts/backup-mysql.sh mysql "$RUNNER_TEMP/project1-ci-business.sql"
           scripts/backup-mysql.sh keycloak-db "$RUNNER_TEMP/project1-ci-keycloak.sql"
       - name: Show status and stop only the disposable CI project
@@ -76,5 +77,8 @@ jobs:
         run: |
           if [ -f "$PRODUCTION_ENV_FILE" ]; then
             scripts/compose-prod.sh ps --all
+            if [ "${{ job.status }}" != success ]; then
+              scripts/compose-prod.sh logs --no-color --tail 120 api-gateway zipkin reverse-proxy 2>&1 | python3 -c 'import re,sys; print(re.sub(r"[a-fA-F0-9]{64}", "[redacted]", sys.stdin.read()))'
+            fi
             scripts/compose-prod.sh down --timeout 30
           fi
