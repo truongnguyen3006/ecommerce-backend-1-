@@ -24,7 +24,7 @@ jobs:
       - name: Check deployment scripts
         run: |
           for script in scripts/*.sh deploy/mysql/*.sh deploy/redis/*.sh deploy/nginx/*.sh; do bash -n "$script"; done
-          python3 -m py_compile scripts/*.py
+          python3 -m py_compile scripts/*.py .github/scripts/*.py
       - name: Validate production Compose model
         run: docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
   images:
@@ -48,3 +48,33 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' "project1-validation/keycloak:$GITHUB_SHA")" = '1000'
           docker build --file deploy/nginx/Dockerfile --tag "project1-validation/reverse-proxy:$GITHUB_SHA" .
           test "$(docker image inspect --format '{{.Config.User}}' "project1-validation/reverse-proxy:$GITHUB_SHA")" = 'nginx'
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: truongnguyen3006/ecommerce-frontend-1-
+          ref: 5b3be4d6dfb0a588df11d3c5160479b7a1496fdd
+          path: frontend-ci
+          persist-credentials: false
+      - name: Build the paired frontend for disposable stack validation
+        run: docker build --file frontend-ci/Dockerfile --build-arg API_URL=http://api-gateway:8080 --build-arg NEXT_PUBLIC_WS_URL=https://ci-app.example.com/ws --tag "project1-validation/frontend:$GITHUB_SHA" frontend-ci
+      - name: Start the complete disposable production stack and run read-only smoke
+        shell: bash
+        env:
+          PRODUCTION_ENV_FILE: ${{ github.workspace }}/.env.production.ci
+        run: |
+          umask 077
+          python3 .github/scripts/prepare-smoke.py
+          python3 scripts/prepare-keycloak.py "$PRODUCTION_ENV_FILE"
+          scripts/compose-prod.sh -f .github/runtime/smoke-override.json config --quiet
+          scripts/compose-prod.sh -f .github/runtime/smoke-override.json up --no-build --pull missing --detach --wait --wait-timeout 600
+          scripts/smoke-production.sh
+          scripts/backup-mysql.sh mysql "$RUNNER_TEMP/project1-ci-business.sql"
+          scripts/backup-mysql.sh keycloak-db "$RUNNER_TEMP/project1-ci-keycloak.sql"
+      - name: Show status and stop only the disposable CI project
+        if: always()
+        env:
+          PRODUCTION_ENV_FILE: ${{ github.workspace }}/.env.production.ci
+        run: |
+          if [ -f "$PRODUCTION_ENV_FILE" ]; then
+            scripts/compose-prod.sh ps --all
+            scripts/compose-prod.sh down --timeout 30
+          fi

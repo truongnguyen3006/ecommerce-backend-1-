@@ -18,4 +18,8 @@ if output.exists():
     if output.read_bytes() != template.read_bytes():
         print('Existing import file differs; review it manually. No overwrite performed.', file=sys.stderr); sys.exit(2)
 else: output.write_bytes(template.read_bytes())
+# This file contains only placeholders. Keycloak UID 1000 must read it even
+# when the operator uses umask 077 for the separate secret-valued environment.
+output.parent.chmod(0o755)
+output.chmod(0o644)
 print('Realm placeholder template prepared; startup skips an existing realm.')
