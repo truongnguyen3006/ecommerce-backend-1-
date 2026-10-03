@@ -58,9 +58,37 @@ class ProductOutboxTransactionTests {
     @Test void removingVariantPermanentlyRetiresSkuAndLiveSkuCannotBeClaimedTwice() {
         var product=service.createProduct(request());
         assertThatThrownBy(() -> service.createProduct(request())).isInstanceOf(com.myexampleproject.common.exception.DomainException.class);
-        service.updateProduct(product.getId(),ProductRequest.builder().variants(List.of()).build());
+        service.updateProduct(product.getId(),ProductRequest.builder().revision(0L).variants(List.of()).build());
         assertThat(jdbc.queryForObject("SELECT retired FROM sku_identity WHERE sku_code='SKU'",Boolean.class)).isTrue();
-        assertThatThrownBy(() -> service.updateProduct(product.getId(),request())).isInstanceOf(com.myexampleproject.common.exception.DomainException.class);
+        assertThatThrownBy(() -> service.updateProduct(product.getId(),ProductRequest.builder().revision(1L).variants(request().getVariants()).build())).isInstanceOf(com.myexampleproject.common.exception.DomainException.class);
+    }
+    @Test void writesAndReadLabelsNormalizeConservativelyAndBlankCategoryCanStillBeCleared() {
+        var input=request();input.setCategory("  Giày  ");input.getVariants().getFirst().setColor("  Đen  ");input.getVariants().getFirst().setSize(" XL ");
+        var p=service.createProduct(input);assertThat(p.getCategory()).isEqualTo("Giày");assertThat(p.getVariants().getFirst().getColor()).isEqualTo("Đen");
+        jdbc.update("UPDATE product_variant SET color='  Đen  ',size=' XL ' WHERE sku_code='SKU'");
+        assertThat(service.getProductById(p.getId()).getVariants().getFirst().getColor()).isEqualTo("Đen");
+        assertThat(service.getVariant("SKU").size()).isEqualTo("XL");
+        service.updateProduct(p.getId(),ProductRequest.builder().revision(0L).category("   ").build());
+        assertThat(service.getProductById(p.getId()).getCategory()).isNull();
+    }
+    @Test void staleFullReplacementCannotRemoveNewVariantOrPublishAnything() {
+        var p=service.createProduct(request());
+        var variants=new ArrayList<>(request().getVariants());variants.add(ProductVariantRequest.builder().skuCode("NEW").initialQuantity(2).build());
+        service.updateProduct(p.getId(),ProductRequest.builder().revision(0L).variants(variants).build());
+        int count=jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event",Integer.class);
+        assertThatThrownBy(() -> service.updateProduct(p.getId(),ProductRequest.builder().revision(0L).variants(List.of()).build()))
+            .isInstanceOfSatisfying(com.myexampleproject.common.exception.DomainException.class,e -> assertThat(e.getCode()).isEqualTo("PRODUCT_REVISION_CONFLICT"));
+        assertThat(service.getProductById(p.getId()).getVariants()).extracting(ProductVariantResponse::getSkuCode).containsExactlyInAnyOrder("SKU","NEW");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event",Integer.class)).isEqualTo(count);
+    }
+    @Test void simultaneousRevisionZeroEditsHaveExactlyOneWinner() throws Exception {
+        var p=service.createProduct(request());var start=new java.util.concurrent.CountDownLatch(1);
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var futures=new ArrayList<java.util.concurrent.Future<Boolean>>();
+            for(int i=0;i<2;i++) {final String name="Editor "+i;futures.add(pool.submit(() -> {start.await();try {service.updateProduct(p.getId(),ProductRequest.builder().revision(0L).name(name).build());return true;}catch(com.myexampleproject.common.exception.DomainException conflict){assertThat(conflict.getCode()).isEqualTo("PRODUCT_REVISION_CONFLICT");return false;}}));}
+            start.countDown();int winners=0;for(var f:futures) if(f.get(10,java.util.concurrent.TimeUnit.SECONDS)) winners++;
+            assertThat(winners).isEqualTo(1);assertThat(service.getProductById(p.getId()).getRevision()).isEqualTo(1);
+        }
     }
     @Configuration(proxyBeanMethods=false) @EnableAutoConfiguration(exclude=org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration.class)
     @EntityScan(basePackages={"com.myexampleproject.productservice.model","com.myexampleproject.common.outbox"})

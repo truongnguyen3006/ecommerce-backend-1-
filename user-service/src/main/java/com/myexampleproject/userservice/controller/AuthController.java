@@ -7,6 +7,8 @@ import com.myexampleproject.userservice.dto.UserRequest;
 import com.myexampleproject.userservice.dto.UserResponse;
 import com.myexampleproject.userservice.service.KeycloakService;
 import com.myexampleproject.userservice.service.UserService;
+import com.myexampleproject.userservice.service.AuthProviderErrors;
+import com.myexampleproject.common.exception.DomainException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import java.time.Duration;
@@ -54,8 +56,8 @@ public class AuthController {
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    public UserResponse register(@Validated({Default.class, UserRequest.Creation.class}) @RequestBody UserRequest userRequest) {
-        return userService.createUser(userRequest);
+    public UserResponse register(@Validated({Default.class, UserRequest.Creation.class}) @RequestBody UserRequest userRequest, @RequestHeader(value="Idempotency-Key",required=false) String key) {
+        return userService.createUser(userRequest,key);
     }
 
     // Login bằng username + password
@@ -78,8 +80,12 @@ public class AuthController {
                 .block(Duration.ofSeconds(10));
 
         } catch (WebClientResponseException ex) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Login failed");
+            throw AuthProviderErrors.classify(ex,false);
+        } catch (DomainException classified) {throw classified;
+        } catch (org.springframework.core.codec.DecodingException malformed) {throw AuthProviderErrors.malformed();
+        } catch (RuntimeException unavailable) {throw AuthProviderErrors.unavailable();
         }
+        AuthProviderErrors.validateTokens(response);
         return ResponseEntity.ok(response);
     }
 
@@ -98,9 +104,13 @@ public class AuthController {
                     .bodyToMono(JsonNode.class)
                     .block(Duration.ofSeconds(10)); // <--- Chỗ này ném lỗi nếu token hết hạn
 
+            AuthProviderErrors.validateTokens(response);
             return ResponseEntity.ok(response);
         } catch (WebClientResponseException e) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token is invalid or expired");
+            throw AuthProviderErrors.classify(e,true);
+        } catch (DomainException classified) {throw classified;
+        } catch (org.springframework.core.codec.DecodingException malformed) {throw AuthProviderErrors.malformed();
+        } catch (RuntimeException unavailable) {throw AuthProviderErrors.unavailable();
         }
     }
 

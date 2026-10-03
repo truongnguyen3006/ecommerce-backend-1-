@@ -36,6 +36,35 @@ class InventoryTopologyTests {
     InventoryCheckResult check(String order, int quantity) {
         checks.pipeInput("arbitrary-client-key",new InventoryCheckRequest(order,new OrderLineItemRequest("SKU",quantity)));return results.readValue();
     }
+    @Test void repeatedAdminOperationHasOneDurableAppliedResult() {
+        String id=UUID.randomUUID().toString();var event=new InventoryAdjustmentEvent("SKU",2,id,"Admin adjustment");
+        adjustments.pipeInput("SKU",event);adjustments.pipeInput("SKU",event);
+        assertThat(stock()).isEqualTo(7);
+        var result=com.myexampleproject.inventoryservice.service.StockOperation.parse(driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_RESULT_STORE).get(id));
+        assertThat(result.status()).isEqualTo("APPLIED");assertThat(result.quantity()).isEqualTo(7);
+    }
+    @Test void invalidAdminOperationRemainsRejectedEvenIfLaterStockWouldPermitIt() {
+        String id=UUID.randomUUID().toString();var event=new InventoryAdjustmentEvent("SKU",-6,id,"remove");
+        adjustments.pipeInput("SKU",event);adjustments.pipeInput("SKU",new InventoryAdjustmentEvent("SKU",10,UUID.randomUUID().toString(),"add"));adjustments.pipeInput("SKU",event);
+        assertThat(stock()).isEqualTo(15);
+        assertThat(com.myexampleproject.inventoryservice.service.StockOperation.parse(driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_RESULT_STORE).get(id)).status()).isEqualTo("REJECTED");
+    }
+    @Test void operationIdCannotBeReusedWithDifferentSkuOrPayload() {
+        products.pipeInput("OTHER",new ProductCreatedEvent("OTHER",4));String id=UUID.randomUUID().toString();
+        adjustments.pipeInput("SKU",new InventoryAdjustmentEvent("SKU",2,id,"first"));adjustments.pipeInput("OTHER",new InventoryAdjustmentEvent("OTHER",20,id,"different"));
+        assertThat(stock()).isEqualTo(7);assertThat(driver.<String,Integer>getTimestampedKeyValueStore(InventoryTopology.INVENTORY_STORE).get("OTHER").value()).isEqualTo(4);
+    }
+    @Test void replayAfterDurableStateRestorationDoesNotApplyAnAdminOperationAgain() {
+        String id=UUID.randomUUID().toString();var event=new InventoryAdjustmentEvent("SKU",2,id,"Admin adjustment");adjustments.pipeInput("SKU",event);
+        String request=driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_REQUEST_STORE).get(id);
+        String result=driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_RESULT_STORE).get(id);
+        driver.close();setup(); // Fresh processors; replay the already committed state that a changelog restores.
+        driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_REQUEST_STORE).put(id,request);
+        driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_RESULT_STORE).put(id,result);
+        driver.<String,Integer>getTimestampedKeyValueStore(InventoryTopology.INVENTORY_STORE).put("SKU",org.apache.kafka.streams.state.ValueAndTimestamp.make(7,0));
+        adjustments.pipeInput("SKU",event);assertThat(stock()).isEqualTo(7);
+        assertThat(driver.<String,String>getKeyValueStore(InventoryTopology.OPERATION_RESULT_STORE).get(id)).isEqualTo(result);
+    }
     @Test void repeatedInitializationDoesNotIncreaseStock() { products.pipeInput("SKU",new ProductCreatedEvent("SKU",10000));assertThat(stock()).isEqualTo(5); }
     @Test void validOrderDeductsExactlyOnce() { assertThat(check("ONE",2).isSuccess()).isTrue();assertThat(stock()).isEqualTo(3);assertThat(check("ONE",2).isSuccess()).isTrue();assertThat(stock()).isEqualTo(3); }
     @Test void insufficientAndInvalidQuantitiesNeverDeduct() { assertThat(check("OVER",6).isSuccess()).isFalse();assertThat(check("ZERO",0).isSuccess()).isFalse();assertThat(check("NEGATIVE",-4).isSuccess()).isFalse();assertThat(stock()).isEqualTo(5); }

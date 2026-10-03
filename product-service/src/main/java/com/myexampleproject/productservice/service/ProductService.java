@@ -57,6 +57,7 @@ public class ProductService {
     @CacheEvict(cacheNames = "products_json_v5", allEntries = true)
     public ProductResponse createProduct(ProductRequest request) {
         validateRequest(request, true);
+        normalizeFacets(request);
         if (request.getVariants() != null) request.getVariants().forEach(v -> skuIdentity.reserveNew(v.getSkuCode()));
 
         Product product = Product.builder()
@@ -125,16 +126,21 @@ public class ProductService {
     @CacheEvict(cacheNames = {"products_json_v5", "product_item_json_v5"}, allEntries = true)
     public ProductResponse updateProduct(Long id, ProductRequest request) {
         validateRequest(request, false);
+        boolean categorySupplied=request.getCategory()!=null;
+        normalizeFacets(request);
 
-        Product product = productRepository.findById(id)
+        Product product = productRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
 
+        if (request.getRevision()==null || request.getRevision()!=product.getRevision())
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"PRODUCT_REVISION_CONFLICT","Product revision changed; refresh and review");
+        product.setRevision(Math.addExact(product.getRevision(),1));
         // [FIX 1] Partial Update: Chỉ cập nhật nếu request có gửi dữ liệu (khác null)
         // Ngăn chặn việc mất dữ liệu khi frontend gửi update từng phần.
         if (request.getName() != null) product.setName(request.getName());
         if (request.getDescription() != null) product.setDescription(request.getDescription());
         if (request.getBasePrice() != null) product.setBasePrice(request.getBasePrice());
-        if (request.getCategory() != null) product.setCategory(request.getCategory());
+        if (categorySupplied) product.setCategory(request.getCategory());
         if (request.getImageUrl() != null) product.setImageUrl(request.getImageUrl());
 
         // [FIX 2] Nếu danh sách variants trong request là NULL -> GIỮ NGUYÊN biến thể cũ, không xóa.
@@ -245,8 +251,8 @@ public class ProductService {
                     .name(product.getName())
                     .price(v.getPrice() != null ? v.getPrice() : product.getBasePrice())
                     .imageUrl(v.getImageUrl() != null ? v.getImageUrl() : product.getImageUrl())
-                    .color(v.getColor())
-                    .size(v.getSize())
+                    .color(FacetValues.label(v.getColor()))
+                    .size(FacetValues.label(v.getSize()))
                     .build();
             outbox.append("product-cache-update-topic", v.getSkuCode(), cacheEvent);
 
@@ -280,6 +286,11 @@ public class ProductService {
         Product product = productRepository.findById(id).orElseThrow();
         product.getVariants().forEach(v -> {skuIdentity.retire(v.getSkuCode());outbox.append("product-cache-update-topic", v.getSkuCode(), null);});
         productRepository.deleteById(id);
+    }
+
+    private void normalizeFacets(ProductRequest request) {
+        if (request.getCategory()!=null) request.setCategory(FacetValues.label(request.getCategory()));
+        if (request.getVariants()!=null) request.getVariants().forEach(v -> {v.setColor(FacetValues.label(v.getColor()));v.setSize(FacetValues.label(v.getSize()));});
     }
 
     private void validateRequest(ProductRequest request, boolean creation) {
@@ -328,7 +339,7 @@ public class ProductService {
         if (Boolean.FALSE.equals(v.getIsActive())) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product variant is unavailable");
         Product product = v.getProduct();
         return new CatalogItem(v.getSkuCode(), product.getName(), v.getPrice() == null ? product.getBasePrice() : v.getPrice(),
-                v.getImageUrl() == null ? product.getImageUrl() : v.getImageUrl(), v.getColor(), v.getSize(), v.getIsActive());
+                v.getImageUrl() == null ? product.getImageUrl() : v.getImageUrl(), FacetValues.label(v.getColor()), FacetValues.label(v.getSize()), v.getIsActive());
     }
 
     private ProductResponse mapToProductResponse(Product product) {
@@ -337,8 +348,8 @@ public class ProductService {
             variantResponses = product.getVariants().stream()
                     .map(v -> ProductVariantResponse.builder()
                             .skuCode(v.getSkuCode())
-                            .color(v.getColor())
-                            .size(v.getSize())
+                            .color(FacetValues.label(v.getColor()))
+                            .size(FacetValues.label(v.getSize()))
                             .price(v.getPrice())
                             .imageUrl(v.getImageUrl())
                             .isActive(v.getIsActive())
@@ -351,10 +362,11 @@ public class ProductService {
 
         return ProductResponse.builder()
                 .id(product.getId())
+                .revision(product.getRevision())
                 .name(product.getName())
                 .description(product.getDescription())
                 .price(product.getBasePrice())
-                .category(product.getCategory())
+                .category(FacetValues.label(product.getCategory()))
                 .imageUrl(product.getImageUrl())
                 .variants(variantResponses)
                 .build();

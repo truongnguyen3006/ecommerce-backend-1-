@@ -14,4 +14,6 @@ public class CartLineItem {
     private String skuCode;
     private int quantity;
     private BigDecimal price;
+    private String revision;
+    public CartLineItem(String skuCode, int quantity, BigDecimal price) {this(skuCode,quantity,price,null);}
 }

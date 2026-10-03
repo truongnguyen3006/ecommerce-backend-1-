@@ -76,7 +76,7 @@ public class CloudinaryImageService {
 
     private Cloudinary createCloudinary() {
         if (!StringUtils.hasText(cloudName) || !StringUtils.hasText(apiKey) || !StringUtils.hasText(apiSecret)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Cloudinary chưa được cấu hình cloudName/apiKey/apiSecret");
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"UPLOAD_NOT_CONFIGURED","Image upload is not configured");
         }
         Cloudinary cloudinary = new Cloudinary(ObjectUtils.asMap(
                 "cloud_name", cloudName,

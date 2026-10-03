@@ -31,8 +31,8 @@ class ProductBusinessTests {
     @Test void partialUpdatePreservesVariantsAndRefreshesCatalogWithoutAddingStock() {
         Product p = Product.builder().id(1L).name("Old").basePrice(BigDecimal.TEN).build();
         p.setVariants(new ArrayList<>(List.of(ProductVariant.builder().skuCode("SKU").price(BigDecimal.TEN).product(p).build())));
-        when(repository.findById(1L)).thenReturn(Optional.of(p));when(repository.save(any())).thenAnswer(a -> a.getArgument(0));
-        ProductResponse result = service.updateProduct(1L,ProductRequest.builder().name("New").build());
+        when(repository.findByIdForUpdate(1L)).thenReturn(Optional.of(p));when(repository.save(any())).thenAnswer(a -> a.getArgument(0));
+        ProductResponse result = service.updateProduct(1L,ProductRequest.builder().revision(0L).name("New").build());
         assertThat(result.getVariants()).hasSize(1);assertThat(result.getVariants().getFirst().getGalleryImages()).isEmpty();
         verify(kafka).append(eq("product-cache-update-topic"),eq("SKU"),any(ProductCacheEvent.class));
         verify(kafka,never()).append(eq("product-created-topic"),anyString(),any());

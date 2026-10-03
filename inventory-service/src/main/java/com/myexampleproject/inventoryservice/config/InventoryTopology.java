@@ -23,6 +23,8 @@ public class InventoryTopology {
     public static final String INVENTORY_STORE = "inventory-store";
     public static final String CHECK_STORE = "inventory-processed-checks";
     public static final String ADJUST_STORE = "inventory-processed-adjustments";
+    public static final String OPERATION_REQUEST_STORE="inventory-operation-requests";
+    public static final String OPERATION_RESULT_STORE="inventory-operation-results";
     private final SerdeConfig serdeConfig;
     private final MeterRegistry meterRegistry;
     private final Map<String, AtomicInteger> gauges = new ConcurrentHashMap<>();
@@ -35,21 +37,42 @@ public class InventoryTopology {
         builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(CHECK_STORE), strings, resultSerde));
         builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(ADJUST_STORE), strings, strings));
 
+        builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(OPERATION_REQUEST_STORE), strings, strings));
+        builder.addStateStore(Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore(OPERATION_RESULT_STORE), strings, strings));
+        var adjustmentSerde=serdeConfig.jsonSchemaSerde(InventoryAdjustmentEvent.class);
+        var input=builder.stream("inventory-adjustment-topic",Consumed.with(strings,adjustmentSerde))
+            .filter((key,event) -> event!=null && event.getSkuCode()!=null && !event.getSkuCode().isBlank());
+        // Globally claim the operation ID before repartitioning by SKU. EOS atomically commits claim + forward.
+        var admin=input.filter((key,event) -> event.getOperationId()!=null && event.getOperationId().matches("[A-Za-z0-9-]{16,64}"))
+            .selectKey((key,event) -> event.getOperationId())
+            .repartition(Repartitioned.with(strings,adjustmentSerde).withName("admin-operations-by-id-v1").withNumberOfPartitions(10))
+            .transform(() -> new Transformer<String,InventoryAdjustmentEvent,KeyValue<String,InventoryAdjustmentEvent>>() {
+                private KeyValueStore<String,String> requests;
+                public void init(ProcessorContext context) {requests=context.getStateStore(OPERATION_REQUEST_STORE);}
+                public KeyValue<String,InventoryAdjustmentEvent> transform(String id,InventoryAdjustmentEvent event) {
+                    if(requests.get(id)!=null) return null; // First immutable payload wins, including after a restart.
+                    requests.put(id,com.myexampleproject.inventoryservice.service.StockOperation.of(event,"PENDING",null,null).json());
+                    return KeyValue.pair(event.getSkuCode(),event);
+                }
+                public void close() {}
+            },OPERATION_REQUEST_STORE);
         KStream<String, String> creations = builder.stream("product-created-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(ProductCreatedEvent.class)))
                 .filter((key, event) -> event != null && event.getSkuCode() != null && !event.getSkuCode().isBlank()
                         && event.getInitialQuantity() != null && event.getInitialQuantity() >= 0)
                 .map((key, event) -> KeyValue.pair(event.getSkuCode(), "INIT:" + event.getInitialQuantity()));
-        KStream<String, String> adjustments = builder.stream("inventory-adjustment-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(InventoryAdjustmentEvent.class)))
-                .filter((key, event) -> event != null && event.getSkuCode() != null && !event.getSkuCode().isBlank())
-                .map((key, event) -> KeyValue.pair(event.getSkuCode(), "ADJUST:" + event.getAdjustmentQuantity() + ":" + (event.getReason() == null ? "" : event.getReason())));
+        KStream<String,String> adjustments=input.filter((key,event) -> event.getOperationId()==null)
+            .map((key,event) -> KeyValue.pair(event.getSkuCode(),"ADJUST:"+event.getAdjustmentQuantity()+":"+(event.getReason()==null?"":event.getReason())))
+            .merge(admin.map((key,event) -> KeyValue.pair(event.getSkuCode(),"ADMIN:"+event.getAdjustmentQuantity()+":"+event.getOperationId()+":"+
+                (event.getReason()==null?"~":java.util.Base64.getEncoder().encodeToString(event.getReason().getBytes(java.nio.charset.StandardCharsets.UTF_8))))));
         creations.merge(adjustments)
                 .repartition(Repartitioned.with(strings, strings).withName("stock-changes-by-sku-v12").withNumberOfPartitions(10))
                 .transform(() -> new Transformer<String, String, KeyValue<String, Integer>>() {
                     private KeyValueStore<String, ValueAndTimestamp<Integer>> stock;
                     private KeyValueStore<String, String> processed;
                     private ProcessorContext context;
+                    private KeyValueStore<String,String> outcomes;
                     public void init(ProcessorContext context) {
-                        this.context = context;stock = context.getStateStore(INVENTORY_STORE);processed = context.getStateStore(ADJUST_STORE);
+                        this.context = context;stock = context.getStateStore(INVENTORY_STORE);processed = context.getStateStore(ADJUST_STORE);outcomes=context.getStateStore(OPERATION_RESULT_STORE);
                     }
                     public KeyValue<String, Integer> transform(String sku, String command) {
                         String[] parts = command.split(":", 3);
@@ -57,6 +80,18 @@ public class InventoryTopology {
                         ValueAndTimestamp<Integer> current = stock.get(sku);
                         if (parts[0].equals("INIT")) {
                             if (current == null) { stock.put(sku, ValueAndTimestamp.make(quantity, context.timestamp()));metric(sku, quantity); }
+                            return null;
+                        }
+                        if(parts[0].equals("ADMIN")) {
+                            String[] operation=parts[2].split(":",2);
+                            String id=operation[0];
+                            if(outcomes.get(id)!=null) return null;
+                            String reason=operation[1].equals("~") ? null : new String(java.util.Base64.getDecoder().decode(operation[1]),java.nio.charset.StandardCharsets.UTF_8);
+                            var event=new InventoryAdjustmentEvent(sku,quantity,id,reason);
+                            long next=current==null?0:(long)current.value()+quantity;
+                            String code=current==null?"SKU_NOT_FOUND":quantity==0 || next<0 || next>Integer.MAX_VALUE?"INVALID_STOCK_ADJUSTMENT":null;
+                            if(code==null) {stock.put(sku,ValueAndTimestamp.make((int)next,context.timestamp()));metric(sku,(int)next);}
+                            outcomes.put(id,com.myexampleproject.inventoryservice.service.StockOperation.of(event,code==null?"APPLIED":"REJECTED",code==null?(int)next:current==null?null:current.value(),code).json());
                             return null;
                         }
                         String reason = parts.length > 2 ? parts[2] : "";
@@ -72,7 +107,7 @@ public class InventoryTopology {
                         return null;
                     }
                     public void close() {}
-                }, INVENTORY_STORE, ADJUST_STORE);
+                }, INVENTORY_STORE, ADJUST_STORE, OPERATION_RESULT_STORE);
 
         builder.stream("inventory-check-request-topic", Consumed.with(strings, serdeConfig.jsonSchemaSerde(InventoryCheckRequest.class)))
                 .filter((key, request) -> request != null && request.getOrderNumber() != null && !request.getOrderNumber().isBlank()

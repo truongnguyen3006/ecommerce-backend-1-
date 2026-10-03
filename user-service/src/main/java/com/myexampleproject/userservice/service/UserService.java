@@ -32,27 +32,11 @@ public class UserService {
     private final UserRepository userRepository;
     private final UserAddressRepository userAddressRepository;
     private final KeycloakService keycloakService;
+    private final ProvisioningService provisioning;
 
     // Tạo user trong  DB
-    public UserResponse createUser(UserRequest userRequest){
-        // 1️⃣ Gọi API Keycloak để tạo user
-        String keycloakId = keycloakService.createUserInKeycloak(userRequest);
-
-        // 2️⃣ Gán role mặc định ("user") cho user vừa tạo
-        keycloakService.assignRealmRoleToUser(keycloakId, "user");
-
-        // 2️⃣ Lưu user profile vào DB
-        User user = User.builder()
-                .keycloakId(keycloakId)
-                .fullName(userRequest.getFullName())
-                .email(userRequest.getEmail())
-                .phoneNumber(userRequest.getPhoneNumber())
-                .address(userRequest.getAddress())
-                .status(true)
-                .build();
-        userRepository.save(user);
-        return mapToUserResponse(user);
-    }
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public UserResponse createUser(UserRequest request,String key) {return mapToUserResponse(provisioning.register(request,key));}
 
     // ✅ HÀM MỚI: Lấy thông tin user để trả về cho API /me
     public UserResponse getUserByKeycloakId(String keycloakId) {
@@ -133,6 +117,7 @@ public class UserService {
 
     public UserAddressResponse createAddress(String keycloakId, UserAddressRequest request) {
         validateAddressRequest(request);
+        lockAddressOwner(keycloakId);
         boolean makeDefault = Boolean.TRUE.equals(request.getIsDefault())
                 || userAddressRepository.findAllByUserKeycloakIdOrderByIsDefaultDescUpdatedDateDesc(keycloakId).isEmpty();
         if (makeDefault) {
@@ -153,12 +138,14 @@ public class UserService {
 
     public UserAddressResponse updateAddress(String keycloakId, Long id, UserAddressRequest request) {
         validateAddressRequest(request);
+        lockAddressOwner(keycloakId);
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
 
         boolean makeDefault = Boolean.TRUE.equals(request.getIsDefault());
         if (makeDefault) {
             clearDefaultAddress(keycloakId);
+            address = userAddressRepository.findByIdAndUserKeycloakId(id,keycloakId).orElseThrow();
         }
 
         address.setLabel(cleanText(request.getLabel(), 64));
@@ -171,23 +158,25 @@ public class UserService {
     }
 
     public UserAddressResponse setDefaultAddress(String keycloakId, Long id) {
+        lockAddressOwner(keycloakId);
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
         clearDefaultAddress(keycloakId);
+        address = userAddressRepository.findByIdAndUserKeycloakId(id,keycloakId).orElseThrow();
         address.setDefault(true);
         return mapToAddressResponse(userAddressRepository.save(address));
     }
 
     public void deleteAddress(String keycloakId, Long id) {
+        lockAddressOwner(keycloakId);
         UserAddress address = userAddressRepository.findByIdAndUserKeycloakId(id, keycloakId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found"));
         boolean wasDefault = address.isDefault();
         userAddressRepository.delete(address);
+        userAddressRepository.flush();
 
         if (wasDefault) {
-            userAddressRepository.findAllByUserKeycloakIdOrderByIsDefaultDescUpdatedDateDesc(keycloakId)
-                    .stream()
-                    .findFirst()
+            userAddressRepository.findFirstByUserKeycloakIdOrderByIdAsc(keycloakId)
                     .ifPresent(next -> {
                         next.setDefault(true);
                         userAddressRepository.save(next);
@@ -195,15 +184,10 @@ public class UserService {
         }
     }
 
-    private void clearDefaultAddress(String keycloakId) {
-        userAddressRepository.findAllByUserKeycloakIdOrderByIsDefaultDescUpdatedDateDesc(keycloakId)
-                .forEach(address -> {
-                    if (address.isDefault()) {
-                        address.setDefault(false);
-                        userAddressRepository.save(address);
-                    }
-                });
+    private void lockAddressOwner(String keycloakId) {
+        userRepository.lockOwner(keycloakId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"User profile not found"));
     }
+    private void clearDefaultAddress(String keycloakId) {userAddressRepository.clearDefaults(keycloakId);}
 
     private void validateAddressRequest(UserAddressRequest request) {
         if (request == null) {

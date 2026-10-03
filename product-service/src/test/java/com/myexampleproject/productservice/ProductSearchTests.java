@@ -27,6 +27,12 @@ class ProductSearchTests {
         assertThat(repository.findAll(spec, PageRequest.of(1,1,Sort.by("basePrice").ascending())).getContent()).extracting(Product::getName).containsExactly("Nike Blue");
         assertThat(repository.findAll(ProductSpecifications.filter(null,null,null,null,"red","40"))).hasSize(2);
     }
+    @Test void legacyFacetSpacesAndCaseMatchWithoutRewritingLabelsOrSemanticInteriorSpaces() {
+        seed("Legacy","  Giày  ","  Đen  "," XL ",100);seed("Same label","giày","đen","xl",120);seed("Interior","Gi  ày","Đen","XL",100);
+        assertThat(repository.findAll(ProductSpecifications.filter(null," GIÀY ",null,null," ĐEN "," xl "))).hasSize(2);
+        assertThat(com.myexampleproject.productservice.service.FacetValues.label("  Gi  ày  ")).isEqualTo("Gi  ày");
+        assertThat(repository.findAll().stream().map(Product::getCategory)).contains("  Giày  ");
+    }
     @Test void colorAndSizeMustMatchTheSameActiveVariant() {
         Product p = Product.builder().name("Combo").basePrice(BigDecimal.TEN).build();
         p.setVariants(List.of(ProductVariant.builder().skuCode("RED40").color("Red").size("40").isActive(true).product(p).build(),

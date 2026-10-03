@@ -15,6 +15,8 @@ import jakarta.validation.constraints.*;
 @AllArgsConstructor
 @NoArgsConstructor
 public class ProductRequest {
+    @PositiveOrZero
+    private Long revision;
     public interface Creation {}
     @NotBlank(groups = Creation.class)
     @Pattern(regexp = "(?s).*\\S.*") @Size(max = 255)

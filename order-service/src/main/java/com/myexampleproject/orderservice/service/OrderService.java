@@ -529,7 +529,7 @@ public class OrderService {
         }
 
         if (order.isWorkflowInvestigationRequired() || order.isPaymentReconciliationRequired() || ("VALIDATED".equals(order.getStatus()) && order.getPaymentAttemptId() != null)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "ONLINE_PAYMENT_IN_FLIGHT");
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"ONLINE_PAYMENT_IN_FLIGHT","ONLINE_PAYMENT_IN_FLIGHT");
         }
         if ("VALIDATED".equals(order.getStatus())) restockOrderItems(order, "CANCELLED: " + orderNumber);
         order.setStatus("CANCELLED");

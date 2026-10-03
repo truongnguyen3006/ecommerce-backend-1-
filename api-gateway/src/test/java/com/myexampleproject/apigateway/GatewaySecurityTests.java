@@ -36,13 +36,19 @@ class GatewaySecurityTests {
         client.get().uri("/actuator/env").headers(h -> h.setBearerAuth("user-token")).exchange().expectStatus().isForbidden();
     }
 
+    @Test void stockOperationStatusIsAdminOnlyEvenThoughPublicStockIsReadable() {
+        token("user-token","user");token("admin-token","admin");
+        client.get().uri("/api/inventory/operations/fixture").exchange().expectStatus().isUnauthorized();
+        client.get().uri("/api/inventory/operations/fixture").headers(h -> h.setBearerAuth("user-token")).exchange().expectStatus().isForbidden();
+        client.get().uri("/api/inventory/operations/fixture").headers(h -> h.setBearerAuth("admin-token")).exchange().expectStatus().isOk();
+    }
     private void token(String value,String role) {
         Jwt jwt=Jwt.withTokenValue(value).header("alg","RS256").subject("A")
                 .claim("realm_access",Map.of("roles",List.of(role))).build();
         when(decoder.decode(value)).thenReturn(Mono.just(jwt));
     }
     @RestController static class Endpoints {
-        @GetMapping({"/api/product/test","/api/cart/me","/api/order/internal/O/payment-context","/actuator/env"}) String get() {return "ok";}
+        @GetMapping({"/api/product/test","/api/cart/me","/api/inventory/operations/fixture","/api/order/internal/O/payment-context","/actuator/env"}) String get() {return "ok";}
         @PostMapping("/api/product/test") String post() {return "ok";}
     }
 }

@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '24.0.2'
           cache: maven
+      - name: Install Redis for isolated atomic-cart tests
+        run: sudo apt-get update && sudo apt-get install --yes redis-server
       - name: Verify all modules and self-contained tests
         run: mvn -B -ntp clean verify
       - name: Check deployment scripts

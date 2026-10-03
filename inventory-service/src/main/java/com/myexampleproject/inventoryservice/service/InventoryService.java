@@ -39,6 +39,20 @@ public class InventoryService {
         return qty;
     }
 
+    public StockOperation operation(String id) {
+        var streams=streamsBuilderFactory.getKafkaStreams();
+        if(streams==null || !streams.state().isRunningOrRebalancing()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Inventory operations unavailable");
+        try {
+            ReadOnlyKeyValueStore<String,String> outcomes=streams.store(StoreQueryParameters.fromNameAndType(InventoryTopology.OPERATION_RESULT_STORE,QueryableStoreTypes.keyValueStore()));
+            String value=outcomes.get(id);
+            if(value==null) {
+                ReadOnlyKeyValueStore<String,String> requests=streams.store(StoreQueryParameters.fromNameAndType(InventoryTopology.OPERATION_REQUEST_STORE,QueryableStoreTypes.keyValueStore()));
+                value=requests.get(id);
+            }
+            return value==null?null:StockOperation.parse(value);
+        } catch(RuntimeException ex) {throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Inventory operations are restoring");}
+    }
+
     /**
      * Chờ state store mở xong trước khi truy vấn.
      * (Phương thức này đã đúng logic từ trước)

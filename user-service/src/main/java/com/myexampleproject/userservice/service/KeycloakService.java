@@ -70,6 +70,14 @@ public class KeycloakService {
     public void updateUserInKeycloak(String keycloakId, Map<String, Object> updates){
         String token = getAdminAccessToken();
         WebClient client = getClient(token);
+        if(updates.containsKey("attributes")) {
+            JsonNode current=client.get().uri("/users/{id}",keycloakId).retrieve().bodyToMono(JsonNode.class).block(Duration.ofSeconds(10));
+            if(current==null) throw new IllegalStateException("Identity response missing");
+            var merged=new java.util.HashMap<String,Object>();
+            current.path("attributes").fields().forEachRemaining(e -> merged.put(e.getKey(),e.getValue()));
+            ((Map<String,Object>)updates.get("attributes")).forEach((name,value) -> {if(!name.equals("project1ProvisioningId")) merged.put(name,value instanceof List<?> ? value : List.of(value));});
+            updates=new java.util.HashMap<>(updates);updates.put("attributes",merged);
+        }
         client.put()
                 .uri("/users/{id}", keycloakId)
                 .bodyValue(updates)
@@ -106,6 +114,7 @@ public class KeycloakService {
                 .uri(uriBuilder -> uriBuilder.path("/users")
                         .queryParam("username", username)
                         .queryParam("exact", true)
+                        .queryParam("briefRepresentation", false)
                         .build())
                 .retrieve()
                 .bodyToFlux(JsonNode.class)
@@ -155,6 +164,38 @@ public class KeycloakService {
                 throw new RuntimeException("Lỗi khi tạo user trong Keycloak: " + e.getMessage(), e);
             }
         }
+    }
+
+    public String ensureProvisionedUser(UserRequest request,String origin,String savedId) {
+        String token=getAdminAccessToken();
+        var client=getClient(token);
+        try {
+            var found=findUsersByExactUsername(request.getUsername(),token);
+            if(found.isEmpty()) {
+                if(savedId!=null) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"PROVISIONING_RECONCILIATION_REQUIRED","Previously recorded identity is missing");
+                JsonNode profile=client.get().uri("/users/profile").retrieve().bodyToMono(JsonNode.class).block(Duration.ofSeconds(10));
+                boolean configured=false;
+                if(profile!=null) for(var attribute:profile.path("attributes")) if("project1ProvisioningId".equals(attribute.path("name").asText())
+                    && attribute.path("permissions").path("view").toString().equals("[\"admin\"]")
+                    && attribute.path("permissions").path("edit").toString().equals("[\"admin\"]")) configured=true;
+                if(!configured) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.SERVICE_UNAVAILABLE,"AUTH_CONFIGURATION_UNAVAILABLE","Admin-only provisioning origin attribute must be configured");
+                try {
+                    client.post().uri("/users").bodyValue(Map.of("username",request.getUsername(),"email",request.getEmail(),"enabled",true,
+                        "attributes",Map.of("project1ProvisioningId",List.of(origin)),
+                        "credentials",List.of(Map.of("type","password","value",request.getPassword(),"temporary",false))))
+                        .retrieve().toBodilessEntity().block(Duration.ofSeconds(10));
+                } catch(WebClientResponseException.Conflict concurrent) { /* Verify exact identity and origin below. */ }
+                found=findUsersByExactUsername(request.getUsername(),token);
+            }
+            if(found.size()!=1) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"USER_ALREADY_EXISTS","Identity is ambiguous");
+            JsonNode user=found.getFirst();
+            if(!request.getUsername().equals(user.path("username").asText()) || !request.getEmail().equalsIgnoreCase(user.path("email").asText())
+                || user.path("id").asText().isBlank() || (savedId!=null && !savedId.equals(user.path("id").asText()))
+                || !origin.equals(user.path("attributes").path("project1ProvisioningId").path(0).asText()))
+                throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"USER_ALREADY_EXISTS","Identity is not proven to belong to this registration");
+            return user.path("id").asText();
+        } catch(com.myexampleproject.common.exception.DomainException ex) {throw ex;}
+        catch(RuntimeException ex) {throw new com.myexampleproject.common.exception.DomainException(HttpStatus.SERVICE_UNAVAILABLE,"PROVISIONING_RETRY","Identity service unavailable; retry the same registration");}
     }
 
     public void assignRealmRoleToUser(String userId, String roleName) {

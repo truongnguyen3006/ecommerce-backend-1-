@@ -33,8 +33,8 @@ public class UserController {
     // ✅ Cho phép đăng ký public (không cần token)
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public UserResponse createUser(@Validated({Default.class, UserRequest.Creation.class}) @RequestBody UserRequest userRequest) {
-        return userService.createUser(userRequest);
+    public UserResponse createUser(@Validated({Default.class, UserRequest.Creation.class}) @RequestBody UserRequest userRequest, @RequestHeader(value="Idempotency-Key",required=false) String key) {
+        return userService.createUser(userRequest,key);
     }
 
     // ✅ User có thể tự cập nhật thông tin của chính mình

@@ -374,7 +374,7 @@ public class PaymentService {
     private void validateVnpayConfiguration() {
         if (vnPayConfig.getTmnCode() == null || vnPayConfig.getTmnCode().isBlank()
                 || vnPayConfig.getSecretKey() == null || vnPayConfig.getSecretKey().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "VNPAY chưa được cấu hình tmnCode/secretKey");
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"PAYMENT_NOT_CONFIGURED","Online payment is not configured");
         }
     }
 

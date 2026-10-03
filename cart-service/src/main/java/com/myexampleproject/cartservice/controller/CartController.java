@@ -64,6 +64,10 @@ public class CartController {
     public ResponseEntity<Void> clearMine(@AuthenticationPrincipal Jwt jwt) {
         cartService.clearCart(owner(jwt, null));return ResponseEntity.noContent().build();
     }
+    @PostMapping("/purchased")
+    public Map<String,Long> purchased(@Valid @RequestBody com.myexampleproject.cartservice.service.PurchasedCartRequest request, @AuthenticationPrincipal Jwt jwt) {
+        return Map.of("removed", cartService.cleanupPurchased(owner(jwt,null), jwt.getTokenValue(), request));
+    }
     @PostMapping("/checkout")
     public CompletableFuture<ResponseEntity<Map<String,String>>> checkoutMine(@AuthenticationPrincipal Jwt jwt) {
         return cartService.checkoutAsync(owner(jwt, null)).thenApply(id -> ResponseEntity.accepted().body(Map.of("orderNumber", id, "message", "Checkout queued")));

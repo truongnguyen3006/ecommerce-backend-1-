@@ -20,6 +20,9 @@ public class CartItemEntity {
     private String skuCode;
     private int quantity;
 
+    @Transient
+    private String revision;
+
     private String productName;
     private String imageUrl;
 

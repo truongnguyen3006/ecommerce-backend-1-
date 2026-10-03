@@ -21,6 +21,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/actuator/**").hasRole("ADMIN")
+                        .requestMatchers("/api/inventory/operations/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/inventory/**").permitAll()
                         .requestMatchers("/api/inventory/**").hasRole("ADMIN")
                         .anyRequest().authenticated())

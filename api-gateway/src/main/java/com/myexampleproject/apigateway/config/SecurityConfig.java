@@ -48,6 +48,7 @@ public class SecurityConfig {
                         .pathMatchers(HttpMethod.POST, "/api/user").permitAll()
                         .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .pathMatchers("/actuator/**", "/api/product/admin/**", "/api/order/admin", "/api/order/admin/**", "/api/admin/**", "/api/user/admin/**").hasRole("ADMIN")
+                        .pathMatchers("/api/inventory/operations/**").hasRole("ADMIN")
                         .pathMatchers(HttpMethod.GET, "/api/product/**", "/api/inventory/**", "/api/payment/vnpay/return", "/api/payment/vnpay/ipn").permitAll()
                         .pathMatchers("/api/product/**", "/api/inventory/**").hasRole("ADMIN")
                         .pathMatchers("/api/cart/**", "/api/order/**", "/api/payment/**", "/api/user/me", "/api/user/addresses", "/api/user/addresses/**").hasAnyRole("USER", "ADMIN")

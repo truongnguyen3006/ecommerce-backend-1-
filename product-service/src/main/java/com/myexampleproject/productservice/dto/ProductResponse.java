@@ -10,6 +10,7 @@ import lombok.*;
 @NoArgsConstructor
 public class ProductResponse {
     private Long id;
+    private long revision;
     private String name;
     private String description;
     private BigDecimal price; // Giá hiển thị

@@ -13,5 +13,7 @@ public class InventoryAdjustmentEvent {
     private String skuCode;
     // Số lượng điều chỉnh, có thể là +10 (thêm) hoặc -5 (giảm)
     private int adjustmentQuantity;
+    private String operationId;
+    public InventoryAdjustmentEvent(String skuCode,int adjustmentQuantity,String reason) {this(skuCode,adjustmentQuantity,null,reason);}
     private String reason; // (Ghi chú: "Admin nhập kho", "Hàng hỏng"...)
 }

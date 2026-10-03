@@ -31,6 +31,7 @@ public class CartService {
     private final ObjectMapper objectMapper;
     private final ProductCatalogClient catalog;
     private final StockClient stock;
+    private final PurchasedOrderClient orders;
     private static final Duration CHECKOUT_TTL = Duration.ofMinutes(15);
     private static final String PRODUCT_CACHE_KEY = "products:cache";
     private static final DefaultRedisScript<Long> MUTATE = new DefaultRedisScript<>("""
@@ -41,19 +42,47 @@ public class CartService {
         if next < 1 or next > tonumber(ARGV[3]) then return -1 end
         redis.call('HSET', KEYS[1], ARGV[1], tostring(next))
         redis.call('HSET', KEYS[2], ARGV[1], ARGV[5])
-        redis.call('EXPIRE', KEYS[1], 86400);redis.call('EXPIRE', KEYS[2], 86400)
+        redis.call('HSET', KEYS[4], ARGV[1], ARGV[6])
+        redis.call('EXPIRE', KEYS[1], 86400);redis.call('EXPIRE', KEYS[2], 86400);redis.call('EXPIRE', KEYS[4], 86400)
         return next
         """, Long.class);
     private static final DefaultRedisScript<Long> REMOVE = new DefaultRedisScript<>("""
         if redis.call('EXISTS', KEYS[3]) == 1 then return -2 end
-        if ARGV[1] == '*' then redis.call('DEL', KEYS[1], KEYS[2])
-        else redis.call('HDEL', KEYS[1], ARGV[1]);redis.call('HDEL', KEYS[2], ARGV[1]) end
+        if ARGV[1] == '*' then redis.call('DEL', KEYS[1], KEYS[2], KEYS[4])
+        else redis.call('HDEL', KEYS[1], ARGV[1]);redis.call('HDEL', KEYS[2], ARGV[1]);redis.call('HDEL', KEYS[4], ARGV[1]) end
         return 1
         """, Long.class);
-    private static final DefaultRedisScript<Long> CLEANUP = new DefaultRedisScript<>("""
-        if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
-        if ARGV[2] == 'clear' then redis.call('DEL', KEYS[1], KEYS[2]) end
-        redis.call('DEL', KEYS[3]);return 1
+    // One Redis execution snapshots quantity and revision together. Legacy lines get a stable token.
+    static final DefaultRedisScript<String> SNAPSHOT = new DefaultRedisScript<>("""
+        local pairs = redis.call('HGETALL', KEYS[1]); local result = {}
+        for i=1,#pairs,2 do
+          local revision = redis.call('HGET', KEYS[4], pairs[i])
+          if not revision then
+            revision = ARGV[1] .. ':' .. pairs[i]
+            redis.call('HSET', KEYS[4], pairs[i], revision)
+          end
+          result[#result+1] = {skuCode=pairs[i],quantity=tonumber(pairs[i+1]),revision=revision}
+        end
+        local ttl = redis.call('TTL', KEYS[1]); if ttl > 0 then redis.call('EXPIRE', KEYS[4], ttl) end
+        return cjson.encode(result)
+        """, String.class);
+    static final DefaultRedisScript<Long> PURCHASED = new DefaultRedisScript<>("""
+        if redis.call('EXISTS', KEYS[5]) == 1 then return 0 end
+        local removed = 0
+        local items = cjson.decode(ARGV[2])
+        for _,item in ipairs(items) do
+          if item.revision and item.revision ~= cjson.null
+             and redis.call('HGET', KEYS[1], item.skuCode) == tostring(item.quantity)
+             and redis.call('HGET', KEYS[4], item.skuCode) == item.revision then
+            redis.call('HDEL', KEYS[1], item.skuCode)
+            redis.call('HDEL', KEYS[2], item.skuCode)
+            redis.call('HDEL', KEYS[4], item.skuCode)
+            removed = removed + 1
+          end
+        end
+        redis.call('SET', KEYS[5], 'done', 'EX', 604800)
+        if redis.call('GET', KEYS[3]) == ARGV[1] then redis.call('DEL', KEYS[3]) end
+        return removed
         """, Long.class);
     private static final DefaultRedisScript<Long> RELEASE = new DefaultRedisScript<>("""
         if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
@@ -67,29 +96,35 @@ public class CartService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "SKU and positive quantity are required");
         var product = catalog.find(item.getSkuCode());
         int available = stock.quantity(item.getSkuCode());
-        Long result = strings.execute(MUTATE, keys(userId), item.getSkuCode(), item.getQuantity().toString(), Integer.toString(available), operation, json(product));
+        Long result = strings.execute(MUTATE, keys(userId), item.getSkuCode(), item.getQuantity().toString(), Integer.toString(available), operation, json(product), UUID.randomUUID().toString());
         if (result == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart store unavailable");
-        if (result == -2) throw new ResponseStatusException(HttpStatus.CONFLICT, "Checkout is in progress");
-        if (result == -1) throw new ResponseStatusException(HttpStatus.CONFLICT, "Requested quantity exceeds available stock");
+        if (result == -2) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"CHECKOUT_IN_PROGRESS","Checkout is in progress");
+        if (result == -1) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"INSUFFICIENT_STOCK","Requested quantity exceeds available stock");
     }
     public void removeItem(String userId, String sku) { remove(userId, sku); }
     public void clearCart(String userId) { remove(userId, "*"); }
     private void remove(String userId, String sku) {
         Long result = strings.execute(REMOVE, keys(userId), sku);
-        if (result != null && result == -2) throw new ResponseStatusException(HttpStatus.CONFLICT, "Checkout is in progress");
+        if (result != null && result == -2) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"CHECKOUT_IN_PROGRESS","Checkout is in progress");
     }
-    private List<String> keys(String userId) { return List.of("cart:qty:" + userId, "cart:data:" + userId, "cart:checkout:" + userId); }
+    private List<String> keys(String userId) { return List.of("cart:qty:" + userId, "cart:data:" + userId, "cart:checkout:" + userId, "cart:revision:" + userId); }
 
     public CartEntity viewCart(String userId) {
-        Map<Object,Object> quantities = strings.opsForHash().entries("cart:qty:" + userId);
+        String snapshot = strings.execute(SNAPSHOT, keys(userId), UUID.randomUUID().toString());
+        if (snapshot == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart store unavailable");
         List<CartItemEntity> items = new ArrayList<>();
-        for (Map.Entry<Object,Object> entry : quantities.entrySet()) {
-            String sku = entry.getKey().toString();
-            var product = displayProduct(userId, sku);
-            int quantity = Integer.parseInt(entry.getValue().toString());
-            items.add(CartItemEntity.builder().skuCode(sku).quantity(quantity).productName(product.name())
+        try {
+            var lines = objectMapper.readTree(snapshot);
+            if (!lines.isArray() && lines.size()!=0) throw new IllegalStateException("Invalid cart snapshot");
+            for (var line : lines) {
+                String sku = line.path("skuCode").asText();
+                var product = displayProduct(userId, sku);
+                items.add(CartItemEntity.builder().skuCode(sku).quantity(line.path("quantity").asInt())
+                    .revision(line.path("revision").asText(null)).productName(product.name())
                     .price(product.price()).imageUrl(product.imageUrl()).build());
-        }
+            }
+        } catch (ResponseStatusException ex) {throw ex;}
+        catch (Exception ex) {throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart snapshot unavailable");}
         items.sort(Comparator.comparing(CartItemEntity::getSkuCode));
         return CartEntity.builder().userId(userId).items(items).build();
     }
@@ -125,13 +160,13 @@ public class CartService {
             if (saved != null) event = objectMapper.readValue(saved, CartCheckoutEvent.class);
             else {
                 CartEntity cart = viewCart(userId);
-                if (cart.getItems().isEmpty()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Cart is empty");
+                if (cart.getItems().isEmpty()) throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"CART_EMPTY","Cart is empty");
                 for (CartItemEntity item : cart.getItems()) {
                     catalog.find(item.getSkuCode());
                     if (item.getQuantity() <= 0 || item.getQuantity() > stock.quantity(item.getSkuCode()))
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, "Insufficient inventory");
+                        throw new com.myexampleproject.common.exception.DomainException(HttpStatus.CONFLICT,"INSUFFICIENT_STOCK","Insufficient inventory");
                 }
-                event = new CartCheckoutEvent(userId, cart.getItems().stream().map(i -> new CartLineItem(i.getSkuCode(), i.getQuantity(), i.getPrice())).toList(), id);
+                event = new CartCheckoutEvent(userId, cart.getItems().stream().map(i -> new CartLineItem(i.getSkuCode(), i.getQuantity(), i.getPrice(), i.getRevision())).toList(), id);
                 strings.opsForValue().set("cart:checkout:event:" + id, json(event), Duration.ofDays(1));
             }
         } catch (ResponseStatusException ex) {
@@ -150,6 +185,19 @@ public class CartService {
     private String json(Object object) {
         try { return objectMapper.writeValueAsString(object); }
         catch (Exception ex) { throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart serialization failed"); }
+    }
+
+    public long cleanupPurchased(String owner, String token, PurchasedCartRequest request) {
+        orders.verify(owner, token, request);
+        return cleanup(owner, request.orderNumber(), request.items().stream()
+            .map(i -> new CartLineItem(i.skuCode(), i.quantity(), null, i.revision())).toList());
+    }
+    private long cleanup(String owner, String orderNumber, List<CartLineItem> items) {
+        var cleanupKeys = new ArrayList<>(keys(owner));
+        cleanupKeys.add("cart:purchased:" + owner + ":" + orderNumber);
+        Long removed = strings.execute(PURCHASED, cleanupKeys, orderNumber, json(items));
+        if (removed == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart cleanup unavailable");
+        return removed;
     }
 
     @KafkaListener(topics = "product-cache-update-topic", groupId = "cart-product-cacher")
@@ -173,7 +221,7 @@ public class CartService {
             String userId = event.getUserId();
             // Do not discard a cart merely because checkout was queued or inventory rejected it.
             if (Set.of("VALIDATED", "COMPLETED").contains(status.getStatus())) {
-                strings.execute(CLEANUP, keys(userId), status.getOrderNumber(), "clear");
+                cleanup(userId, status.getOrderNumber(), event.getItems());
             } else if (Set.of("FAILED", "CANCELLED", "PAYMENT_FAILED").contains(status.getStatus())) {
                 strings.execute(RELEASE, List.of("cart:checkout:" + userId), status.getOrderNumber());
             }
