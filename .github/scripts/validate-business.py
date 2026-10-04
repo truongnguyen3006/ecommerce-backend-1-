@@ -313,6 +313,11 @@ try:
     second_query = callback(second_payment)
     compose('restart','payment-service');healthy('payment-service')
     user_token = login(user);admin_token = login(admin)
+    # Container readiness precedes Eureka/Gateway route convergence after restart.
+    # Poll only a read: never retry the first financial callback ambiguously.
+    await_value('restarted payment route and retained pending reference',
+                lambda:request('GET','/api/payment/order/'+second_online,token=user_token)[1],
+                lambda p:p['status']=='PENDING' and p['txnRef']==second_payment['txnRef'])
     ipn(second_query,'00');ipn(second_query,'02');status(second_online,'COMPLETED')
     await_value('restarted payment success',lambda:request('GET','/api/payment/order/'+second_online,token=user_token)[1],lambda p:p['status']=='SUCCESS')
     compose('kill','--signal','SIGKILL','inventory-service');healthy('inventory-service')
@@ -365,6 +370,10 @@ try:
     assert request('GET','/api/inventory/operations/'+op,token=admin_token)[1]['status'] == 'APPLIED'
     assert request('POST','/api/order',cod_body,user_token,cod_key,(202,))[1]['orderNumber'] == cod
     request('POST','/api/inventory/adjust',adjustment,admin_token,op,(200,202))
+    for order, transaction in ((online,payment),(second_online,second_payment)):
+        await_value('restored payment route and successful reference',
+                    lambda number=order:request('GET','/api/payment/order/'+number,token=user_token)[1],
+                    lambda p, ref=transaction['txnRef']:p['status']=='SUCCESS' and p['txnRef']==ref)
     ipn(query,'02');ipn(second_query,'02');stock(sku_a,12);stock(sku_b,6)
     passed('isolated restore conserves owners/SKUs/totals/payment refs/outbox IDs/cart revisions/operation IDs; retry remains idempotent')
     print('Disposable business, fault and coordinated restore rehearsal completed.',flush=True)

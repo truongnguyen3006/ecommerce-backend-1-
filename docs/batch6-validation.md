@@ -34,6 +34,8 @@ Local Docker/Podman is unavailable. Backend GitHub CI builds all production imag
 
 The restore stops writers and consumers, uses the documented business/Keycloak SQL backup scripts, snapshots stopped Redis/Kafka/Streams volumes, verifies checksums, creates a second project with distinct labelled volumes, restores into empty targets and compares identities, totals, references, event/operation IDs, stock and cart revisions. Private dumps, generated credentials and archives stay in runner temporary storage. No owner data, live settlement, off-host disaster recovery, capacity or RPO/RTO claim is implied.
 
+The routing-correction run passed the first nine business checks, including COD, signed mock payment, compensation, admin retry and Kafka outage/Order restart. Its next callback hit a temporary Gateway 503 immediately after Payment container readiness; the Gateway explicitly reported no registered Payment server before discovery converged. The probe now polls the authenticated, read-only payment view for the retained PENDING reference after restart (and SUCCESS references after restore) before sending callbacks. The bounded wait does not retry an ambiguous first financial callback or weaken the required 00/02 acknowledgements.
+
 The script records a check only after its assertions pass. Its presence alone is not runtime evidence. Consult the final report for the actual CI run, completed checks, failures and any unverified scenarios.
 
 ## Security
