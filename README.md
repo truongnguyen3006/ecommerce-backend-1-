@@ -14,8 +14,6 @@ Backend cho hệ thống **Ecommerce Microservices** xây dựng bằng Java/Spr
 
 - **Backend:** [ecommerce-backend-1-](https://github.com/truongnguyen3006/ecommerce-backend-1-)
 - **Frontend:** [ecommerce-frontend-1-](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
-- **Branch hiện tại:** `production-ready-final`
-- **Báo cáo kiểm thử cuối:** [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md)
 
 ---
 
@@ -133,7 +131,7 @@ Shared modules:
 | VNPay Sandbox local | **End-to-end VERIFIED** |
 | Public production deployment | Chưa thực hiện |
 
-Chi tiết đầy đủ xem tại [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md).
+Các kết quả trên đã được xác minh qua CI và full-stack validation trên nhánh hiện tại.
 
 ---
 
@@ -218,7 +216,7 @@ Ví dụ:
 mvn -pl order-service spring-boot:run
 ```
 
-Xem thêm [docs/local-startup-audit.md](docs/local-startup-audit.md).
+Các biến môi trường local tham khảo nằm trong `.env.example`.
 
 ---
 
@@ -385,12 +383,10 @@ Project **chưa claim production-ready hoàn toàn** vì chưa có public deploy
 
 ## Tài liệu liên quan
 
-- [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md)
 - [DEPLOYMENT.md](DEPLOYMENT.md)
 - [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md)
 - [BACKUP_RESTORE.md](BACKUP_RESTORE.md)
-- [docs/local-startup-audit.md](docs/local-startup-audit.md)
-- [docs/dependency-review-batch6.md](docs/dependency-review-batch6.md)
+- [docs/production-recovery.md](docs/production-recovery.md)
 
 ---
 
