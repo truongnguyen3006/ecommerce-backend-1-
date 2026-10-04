@@ -1,173 +1,370 @@
-# High-Concurrency Ecommerce Microservices Backend
+# Project 1 — High-Concurrency Ecommerce Microservices Backend
 
-Backend microservices được xây dựng để kiểm thử **concurrent checkout**, **inventory consistency** và nguy cơ **overselling** khi nhiều người dùng cùng đặt hàng trong một khoảng thời gian ngắn.
+Backend cho hệ thống **Ecommerce Microservices** tập trung vào ba bài toán chính:
 
-Batch 1 trên `project1-recovery` bổ sung validation, phân trang/tìm kiếm sản phẩm, quyền sở hữu giỏ hàng/đơn hàng, xử lý event trùng và migration có kiểm soát. Xem [báo cáo và checklist chạy local](docs/batch1-finalization.md) cùng [danh sách file thay đổi](docs/batch1-changed-files.md). Bản hiện tại đã qua `mvn clean verify` với 61 test trên JDK 24; các benchmark bên dưới là kết quả lịch sử, chưa được chạy lại sau Batch 1.
+1. **concurrent checkout và overselling prevention**;
+2. **order / inventory / payment consistency** trong luồng bất đồng bộ;
+3. **recoverability và production-oriented hardening** khi service, broker, Redis hoặc external provider gặp lỗi.
 
-Trọng tâm của project không phải là hoàn thiện toàn bộ nghiệp vụ ecommerce cho production, mà là xây dựng một hệ thống đủ thực tế để thử nghiệm cách các microservice, cache, database, Kafka và API Gateway phối hợp dưới tải đồng thời.
+Project được xây dựng bằng Java/Spring Boot và kết hợp MySQL, Redis, Kafka/Kafka Streams, Keycloak, Eureka, API Gateway, WebSocket/STOMP, Prometheus/Grafana/Zipkin, VNPay Sandbox và Cloudinary.
 
+> **Trạng thái hiện tại:** source/configuration đã được harden theo hướng production và đã qua disposable full-stack validation. Project **chưa được tuyên bố là một public production deployment**; domain/TLS thật, owner environment, multi-instance capacity và production payment provider vẫn là các bước riêng.
 
-## Production-oriented release
+- **Backend:** [truongnguyen3006/ecommerce-backend-1-](https://github.com/truongnguyen3006/ecommerce-backend-1-)
+- **Frontend:** [truongnguyen3006/ecommerce-frontend-1-](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
+- **Current release candidate branch:** `production-ready-final`
+- **Final detailed validation:** [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md)
 
-Nhánh `production-ready-final` bổ sung bản vá P0, transactional outbox và cấu hình production tách riêng. Bắt đầu với [DEPLOYMENT.md](DEPLOYMENT.md), [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md), [BACKUP_RESTORE.md](BACKUP_RESTORE.md) và [hướng dẫn đối soát/outbox](docs/production-recovery.md). Kết quả kiểm định hiện tại nằm trong `PROJECT1_PRODUCTION_READY_FINAL_REPORT.md`; benchmark lịch sử bên dưới không phải chứng nhận deployment production. Inventory/Notification khởi chạy một replica, Kafka một node; vẫn cần kiểm chứng Docker và dịch vụ ngoài trên môi trường thật.
+---
 
-## Kết quả nổi bật
+## Current Validation Status
 
-| Kịch bản | Tải kiểm thử | Mục tiêu | Kết quả chính |
-|---|---:|---|---|
-| Single-SKU oversell | 1,500 virtual users | Nhiều request cùng tranh mua SKU `NIK1-GREEN-39`, tồn kho ban đầu 100 | 100 đơn hoàn tất, tồn kho cuối = 0; các đơn còn lại bị từ chối khi hết tồn kho |
-| Multi-SKU concurrent checkout | 1,000 checkout requests | Phân tán tải trên nhiều SKU | 0% JMeter error, throughput khoảng 318.5 req/s trong lần benchmark được lưu |
+| Validation | Current result |
+|---|---|
+| Java build | Java 24 / Maven reactor PASS |
+| Backend default suite | **150 tests / 12 modules / 0 failures / 0 errors / 0 skipped** |
+| Native Keycloak lifecycle suite | **5 tests PASS** against Keycloak 26.8.0 |
+| Frontend paired release | **79 tests PASS** |
+| MySQL migration/runtime probes | MySQL 8.4.10 PASS |
+| Production images | **12 images built successfully** |
+| Disposable production stack | **20 services healthy** |
+| Full-stack smoke | PASS |
+| Business / restart / replay / backup / restore rehearsal | **13 / 13 checks PASS** |
+| VNPay Sandbox | **Manual local end-to-end flow VERIFIED on 2026-10-04** |
+| Public deployment | NOT DONE |
+| Production VNPay merchant/settlement | NOT VERIFIED |
+| Multi-instance / measured capacity | NOT VERIFIED |
+| Container/OS SCA | NOT VERIFIED |
 
-> Các số liệu trên được lấy từ các screenshot benchmark đã lưu trong repo. File `.jmx` là test plan có thể cấu hình lại số thread; khi thay đổi thread count cần cập nhật `Synchronizing Timer` tương ứng.
+Batch 6 vẫn được phân loại là **PARTIAL** trong final report vì còn dependency/reachability triage, container/OS SCA, real DLT/operator rehearsal, owner legacy-data/realm adoption và scale/capacity validation. Điều này không làm thay đổi các source/runtime gates đã PASS.
 
-## Mục tiêu chính
+---
 
-- Mô phỏng luồng đặt hàng trong môi trường có nhiều request đồng thời.
-- Kiểm tra khả năng ngăn oversell khi nhiều người cùng tranh mua một SKU có tồn kho giới hạn.
-- Giữ trạng thái tồn kho nhất quán trong flow bất đồng bộ.
-- Đánh giá cách gateway, business services, Redis, MySQL và Kafka phối hợp dưới tải cao.
-- Theo dõi trạng thái đơn hàng và hành vi của hệ thống qua Prometheus, Grafana và Zipkin.
+## Architecture
 
-## Kiến trúc chính
+```mermaid
+flowchart LR
+    CLIENT[Web / Mobile Client] --> GW[API Gateway]
+    GW --> USER[User Service]
+    GW --> PRODUCT[Product Service]
+    GW --> CART[Cart Service]
+    GW --> ORDER[Order Service]
+    GW --> INVENTORY[Inventory Service]
+    GW --> PAYMENT[Payment Service]
+    GW --> NOTI[Notification Service]
 
-Project được tách thành các service sau:
+    USER --> KC[Keycloak]
+    PRODUCT --> MYSQL[(MySQL)]
+    USER --> MYSQL
+    ORDER --> MYSQL
+    PAYMENT --> MYSQL
 
-- `api-gateway`: điểm vào chung của hệ thống.
-- `discovery-server`: service discovery bằng Eureka.
-- `user-service`: đăng ký, đăng nhập và thông tin người dùng.
-- `product-service`: quản lý sản phẩm, cache và upload ảnh sản phẩm.
-- `inventory-service`: quản lý tồn kho và xử lý kiểm tra tồn kho bằng Kafka Streams.
-- `cart-service`: quản lý giỏ hàng.
-- `order-service`: tạo đơn và điều phối luồng đặt hàng.
-- `payment-service`: xử lý payment workflow, hỗ trợ tích hợp VNPay Sandbox; benchmark có thể sử dụng luồng thanh toán mô phỏng/đơn giản hóa.
-- `notification-service`: cập nhật trạng thái đơn hàng theo flow bất đồng bộ.
+    CART --> REDIS[(Redis)]
 
-Trong benchmark mở rộng, Nginx phân phối request theo `least_conn` tới **2 API Gateway instances** chạy tại `8080` và `8090`, với Nginx expose ra cổng `8000`.
+    PRODUCT --> KAFKA[Kafka / Schema Registry]
+    ORDER --> KAFKA
+    PAYMENT --> KAFKA
+    INVENTORY --> KAFKA
+    NOTI --> KAFKA
 
-## Một số quyết định kỹ thuật chính
+    INVENTORY --> STREAMS[Kafka Streams / State Store]
 
-- Kafka Streams xử lý inventory theo key `skuCode` để các event của cùng một SKU được xử lý theo cùng key.
-- Inventory sử dụng persistent state store để duy trì trạng thái tồn kho phục vụ xử lý stream.
-- Kafka Streams được cấu hình `exactly_once_v2` cho topology inventory.
-- Redis được sử dụng cho cart data, cache và một số workflow state.
-- Nginx sử dụng `least_conn` để cân bằng tải giữa hai API Gateway instances trong bài benchmark.
-- JMeter sử dụng `Synchronizing Timer` để tạo contention khi nhiều virtual users checkout gần như cùng lúc.
+    PRODUCT --> CLOUDINARY[Cloudinary]
+    PAYMENT --> VNPAY[VNPay Sandbox]
 
-## Hạ tầng local
+    GW --> EUREKA[Eureka]
+    USER --> EUREKA
+    PRODUCT --> EUREKA
+    CART --> EUREKA
+    ORDER --> EUREKA
+    INVENTORY --> EUREKA
+    PAYMENT --> EUREKA
+    NOTI --> EUREKA
+```
 
-Repo có `docker-compose.yml` để dựng các thành phần hạ tầng chính:
+### Application services
 
-- MySQL
-- Redis
-- Kafka
-- Schema Registry
-- Keycloak
-- Prometheus
-- Grafana
-- Zipkin
-- Nginx
+| Module | Responsibility | Default port |
+|---|---|---:|
+| `api-gateway` | Public API entry, routing, security boundary | 8080 |
+| `discovery-server` | Eureka service discovery | 8761 |
+| `product-service` | Catalog, variants, SKU identity, Cloudinary | 8083 |
+| `inventory-service` | Stock, Kafka Streams, idempotent stock operations | 8082 |
+| `cart-service` | Redis-backed owner cart and atomic cleanup | 8084 |
+| `order-service` | Order orchestration, saga state, transactional outbox | 8086 |
+| `payment-service` | VNPay lifecycle, Return/IPN, payment reconciliation | 8089 |
+| `user-service` | User profile, address invariants, Keycloak provisioning | 8088 |
+| `notification-service` | Authenticated order-status notifications | 8087 |
 
-## Công nghệ sử dụng
+Shared modules:
 
-- **Java** – ngôn ngữ chính của backend.
-- **Spring Boot** – xây dựng REST API và các microservice.
-- **Spring Cloud Gateway** – API Gateway.
-- **Eureka** – service discovery.
-- **MySQL** – cơ sở dữ liệu quan hệ cho các business service.
-- **Redis** – cart data, cache và hỗ trợ xử lý state.
-- **Kafka** – giao tiếp bất đồng bộ giữa các service.
-- **Kafka Streams** – xử lý inventory stream, keyed processing và state store.
-- **Keycloak / OAuth2 / JWT** – xác thực và phân quyền.
-- **Docker Compose** – dựng hạ tầng local.
-- **Nginx** – reverse proxy và load balancing cho API Gateway.
-- **Prometheus / Grafana / Zipkin** – metrics, monitoring và distributed tracing.
-- **JMeter** – kiểm thử tải và concurrent checkout.
-- **VNPay Sandbox** – tích hợp luồng thanh toán.
-- **Cloudinary** – upload ảnh sản phẩm phía server.
+- `common-dto`
+- `common-events`
 
-## Bài toán mà repo tập trung
+---
 
-Khi nhiều request đặt hàng đến cùng lúc, project tập trung kiểm tra các câu hỏi sau:
+## Core Engineering Highlights
 
-- Hệ thống có chặn được bán vượt tồn kho hay không?
-- Tồn kho có giữ được trạng thái hợp lệ khi nhiều request cùng tranh mua một SKU hay không?
-- Luồng order → inventory → payment/notification phản ứng thế nào khi tải tăng cao?
-- Gateway và các business service hoạt động ra sao khi phải xử lý nhiều request gần như đồng thời?
-- Metrics và tracing có cung cấp đủ thông tin để quan sát hệ thống trong quá trình benchmark hay không?
+### Concurrent inventory consistency
 
-## Yêu cầu môi trường
+- Inventory events are keyed by `skuCode`.
+- Kafka Streams uses persistent state stores.
+- Inventory topology uses `exactly_once_v2` for its Kafka-side processing.
+- Stable event / operation identity protects duplicate retries.
+- Stock adjustment cannot silently apply twice.
+- Negative-stock and duplicate-restoration scenarios are regression tested.
 
-- JDK 24
-- Maven 3.9+
-- Docker và Docker Compose
-- Apache JMeter nếu muốn chạy lại load test
+### Transactional outbox
 
-## Cấu hình
+Order, Payment and Product write business state and outbound event intent durably before publication. Outbox publication is retryable and consumers are designed for at-least-once delivery with idempotent handling.
 
-Phần lớn các service hiện có cấu hình local mặc định trực tiếp trong `application.properties`. Vì vậy khi chạy trên máy local, cần bảo đảm MySQL, Redis, Kafka, Keycloak, Eureka và các service liên quan đang chạy đúng host/port mà project đang cấu hình.
+This avoids treating a successful database commit plus failed Kafka send as if the entire distributed operation had succeeded.
 
-File `.env.example` trong repo chủ yếu đóng vai trò tham khảo. Không phải mọi service hiện tại đều tự động đọc toàn bộ biến trong file này.
+### Order / payment / inventory safety
 
-Nếu thay đổi môi trường chạy, hãy kiểm tra các file:
+The hardened flow protects against states equivalent to:
 
-- `*/src/main/resources/application.properties`
-- `docker-compose.yml`
-- `nginx.conf`
+```text
+payment SUCCESS
++
+order CANCELLED
++
+inventory RESTORED
+```
 
-### VNPay Sandbox
+Payment fencing, durable inventory outcome evidence and explicit reconciliation are preferred over unsafe automatic compensation when the system cannot prove the financial state.
 
-`payment-service` hỗ trợ các biến môi trường sau:
+### Aged saga and DLT handling
 
-- `VNPAY_TMN_CODE`
-- `VNPAY_SECRET_KEY`
-- `VNPAY_RETURN_URL`
-- `VNPAY_IPN_URL`
-- `FRONTEND_BASE_URL`
-- `ORDER_SERVICE_BASE_URL`
+- durable inventory outcome receipts;
+- bounded aged-workflow retries;
+- explicit investigation/reconciliation state;
+- SQL workflow dead-letter evidence;
+- no blind stock restoration;
+- no automatic refund claim.
 
-Nếu chỉ chạy benchmark mà không kiểm thử VNPay, có thể sử dụng flow benchmark mà không cần hoàn thiện thanh toán thực tế.
+### Permanent SKU identity
 
-> **Security note:** không commit credential thật của VNPay, Cloudinary hoặc các external service lên public repository. Khi public/deploy project, nên truyền secret qua environment variables hoặc secret manager và rotate các credential đã từng bị lộ trong Git history.
+Deleted/retired SKU codes remain reserved so a new product cannot accidentally inherit historical inventory or event identity from an old variant.
 
-## Dữ liệu và thành phần có sẵn
+### Product concurrency
 
-Repo đã chuẩn bị một số thành phần để tái hiện môi trường local:
+Product updates use a checked revision. A stale admin editor receives a conflict instead of silently overwriting a newer catalog/variant update.
 
-- `docker-compose.yml`: dựng các dependency chính.
-- `mysql-init/init.sql`: khởi tạo database business ban đầu.
-- `keycloak-data/realm-export.json`: import realm cho Keycloak.
-- `product-service`: có logic seed dữ liệu phục vụ demo inventory và benchmark.
-- `Jmeter Script/`: chứa test plan và dữ liệu cho hai kịch bản load test.
+### Atomic cart cleanup
 
-## Cách chạy local
+Purchased-cart cleanup is owner scoped and conditional on SKU, quantity and line revision. A concurrent/newer cart mutation is retained instead of being deleted by an old checkout snapshot.
 
-### 1. Clone project
+### Recoverable identity provisioning
+
+Registration coordinates SQL and Keycloak using a durable provisioning intent and stable idempotency identity. Partial provider/SQL failures can be retried without adopting an unrelated Keycloak user or storing passwords for background replay.
+
+---
+
+## VNPay Sandbox
+
+The payment flow separates two responsibilities:
+
+- **Return URL:** browser navigation only; it does not prove payment success.
+- **IPN:** server-to-server provider notification used for authoritative callback processing.
+
+Additional hardening includes:
+
+- signed callback verification;
+- amount / merchant / transaction validation;
+- idempotent duplicate IPN handling;
+- 15-minute payment-attempt expiry metadata;
+- no indefinite reuse of an expired payment URL;
+- explicit reconciliation for ambiguous/late payment evidence;
+- cancellation/payment race protection.
+
+### Manual local sandbox verification
+
+On **2026-10-04**, a new VNPay test merchant was used to complete a local end-to-end sandbox transaction:
+
+```text
+Flash Store checkout
+    -> VNPay Sandbox
+    -> NCB test card
+    -> OTP
+    -> signed callback / return flow
+    -> Payment SUCCESS
+    -> Order COMPLETED
+```
+
+This verifies the **VNPay Sandbox integration in the local environment**. It is **not** a claim of production VNPay merchant approval or real-money settlement.
+
+Local payment configuration uses environment variables:
+
+```text
+VNPAY_TMN_CODE
+VNPAY_SECRET_KEY
+VNPAY_PAY_URL
+VNPAY_RETURN_URL
+VNPAY_IPN_URL
+FRONTEND_BASE_URL
+ORDER_SERVICE_BASE_URL
+```
+
+Never commit VNPay HashSecret or any provider credential.
+
+---
+
+## Cloudinary
+
+Product image upload is handled by Product Service. Credentials remain backend-only:
+
+```text
+CLOUDINARY_CLOUD_NAME
+CLOUDINARY_API_KEY
+CLOUDINARY_API_SECRET
+CLOUDINARY_PRODUCT_FOLDER
+```
+
+The frontend receives only the resulting image URLs/public identifiers.
+
+---
+
+## Production-Oriented Configuration
+
+The repository contains a separate production configuration rather than reusing local development defaults.
+
+Current production-oriented assets include:
+
+- `application-prod.properties` profiles;
+- externalized secrets;
+- Flyway migrations + Hibernate `validate`;
+- production seeders disabled by default;
+- Redis AOF/RDB persistence policy;
+- Kafka / Streams persistent volumes and fixed identities;
+- optimized Keycloak production image/configuration;
+- standalone frontend image;
+- reverse-proxy / ingress configuration;
+- health, readiness and liveness probes;
+- Prometheus, Grafana and Zipkin configuration;
+- backup / restore scripts;
+- guarded deployment scripts;
+- CI and release workflows;
+- production checklist and recovery runbooks.
+
+Key documents:
+
+- [DEPLOYMENT.md](DEPLOYMENT.md)
+- [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md)
+- [BACKUP_RESTORE.md](BACKUP_RESTORE.md)
+- [docs/production-recovery.md](docs/production-recovery.md)
+- [docs/batch4-correctness.md](docs/batch4-correctness.md)
+- [docs/batch5-consistency.md](docs/batch5-consistency.md)
+- [docs/batch6-validation.md](docs/batch6-validation.md)
+- [docs/dependency-review-batch6.md](docs/dependency-review-batch6.md)
+
+---
+
+## Technology Stack
+
+| Area | Technology |
+|---|---|
+| Language | Java 24 |
+| Backend | Spring Boot 3.5.7 |
+| Cloud stack | Spring Cloud 2025.0.0 |
+| Gateway | Spring Cloud Gateway |
+| Discovery | Eureka |
+| Authentication | Keycloak / OAuth2 / JWT |
+| Database | MySQL |
+| Migration | Flyway |
+| Cache / cart state | Redis |
+| Messaging | Apache Kafka |
+| Stream processing | Kafka Streams |
+| Schema | Schema Registry / JSON Schema |
+| Realtime | WebSocket / STOMP |
+| Image storage | Cloudinary |
+| Payment | VNPay Sandbox |
+| Observability | Prometheus / Grafana / Zipkin |
+| Containerization | Docker / Docker Compose |
+| Reverse proxy | Nginx |
+| Load testing | Apache JMeter |
+| Build | Maven |
+
+---
+
+## Run Locally
+
+### Requirements
+
+- JDK **24**
+- Maven **3.9+**
+- Docker Desktop / Docker Compose
+- Node.js/npm for the frontend
+- JMeter only if you want to repeat the historical load tests
+
+### Clone
+
+After the final branch is promoted to `main`:
 
 ```bash
-git clone --single-branch --branch project1-recovery https://github.com/truongnguyen3006/ecommerce-backend-1-.git
+git clone https://github.com/truongnguyen3006/ecommerce-backend-1-.git
 cd ecommerce-backend-1-
 ```
 
-### 2. Chạy hạ tầng
+Until then, use:
 
-Tại thư mục gốc backend:
+```bash
+git clone --branch production-ready-final https://github.com/truongnguyen3006/ecommerce-backend-1-.git
+cd ecommerce-backend-1-
+```
+
+### Build
+
+For a normal local startup:
+
+```bash
+mvn clean install -DskipTests
+```
+
+For the complete source gate:
+
+```bash
+mvn clean verify
+```
+
+### Windows note for Redis atomic tests
+
+`RedisCartAtomicTests` intentionally launches an isolated Redis process and does **not** attach to the owner's running Redis container.
+
+Its default executable is Linux:
+
+```text
+/usr/bin/redis-server
+```
+
+Therefore a direct Windows `mvn clean verify` needs either:
+
+- WSL/Linux with `redis-server` installed; or
+- `TEST_REDIS_EXECUTABLE` pointing to a compatible local Redis executable.
+
+Example PowerShell:
+
+```powershell
+$env:TEST_REDIS_EXECUTABLE="C:\path\to\redis-server.exe"
+mvn clean verify
+```
+
+A failure such as `Cannot run program "/usr/bin/redis-server"` on Windows is an environment/test-harness issue, not evidence that the Cart business assertions failed.
+
+### Start infrastructure
+
+From the repository root:
 
 ```bash
 docker compose up -d mysql-business redis keycloak-mysql keycloak kafka schema-registry
 docker compose ps
 ```
 
-### 3. Chạy các Spring Boot service
+Do not run `docker compose down -v` unless you intentionally want to remove local volumes/data.
 
-Có thể chạy bằng IDE hoặc Maven. Thứ tự gợi ý:
+### Start application services
 
-Trước khi chạy service, build/install các module dùng chung tại thư mục gốc:
-
-```bash
-mvn -DskipTests install
-```
-
-Đợi Docker dependencies sẵn sàng và kiểm tra token Keycloak theo [startup audit](docs/local-startup-audit.md), sau đó chạy mỗi service trong terminal/IDE riêng:
+Recommended local order:
 
 1. `discovery-server`
 2. `inventory-service`
@@ -176,239 +373,240 @@ mvn -DskipTests install
 5. `cart-service`
 6. `notification-service`
 7. `user-service`
-8. `product-service` (seeder phát event; các consumer phía trên nên sẵn sàng trước)
+8. `product-service`
 9. `api-gateway`
 
-Ví dụ:
+Example:
 
 ```bash
-cd order-service
-mvn spring-boot:run
+mvn -pl order-service spring-boot:run
 ```
 
-Nếu muốn benchmark qua Nginx với 2 API Gateway instances, chạy thêm một gateway instance tại `8090`, sau đó gửi traffic qua Nginx tại `8000`.
+See [docs/local-startup-audit.md](docs/local-startup-audit.md) for local ports, Keycloak startup checks and common startup failures.
 
-`nginx.conf` hiện trỏ tới cả `8080` và `8090`. Nếu chỉ chạy một gateway, kiểm tra API trực tiếp tại `8080`. Chạy đủ hai gateway trước khi dùng Nginx:
+---
 
-```bash
-mvn -pl api-gateway spring-boot:run -Dspring-boot.run.arguments=--server.port=8090
-docker compose up -d nginx
+## Database Migrations
+
+Recent hardening added additive migrations for:
+
+- durable saga / DLT recovery;
+- permanent SKU identity;
+- payment-attempt expiry;
+- checked product revision;
+- one-default-address invariant;
+- recoverable Keycloak/SQL provisioning.
+
+Existing inherited migrations were not rewritten. Production configuration keeps Flyway validation and Hibernate `validate`.
+
+Fresh MySQL 8.4.10 startup and the new migration paths were exercised in CI. Adoption of an owner's older/legacy database still requires a backed-up rehearsal rather than destructive reset.
+
+---
+
+## Automated Validation
+
+### Backend
+
+Final default reactor:
+
+```text
+150 tests
+12 modules
+0 failures
+0 errors
+0 skipped
 ```
 
-Chi tiết nguyên nhân lỗi, bảng cổng/database/Kafka group, cách kiểm tra Keycloak đã có dữ liệu và xử lý Windows process chiếm cổng 8087: [Local startup audit](docs/local-startup-audit.md).
+Separate actual Keycloak 26.8.0 lifecycle suite:
 
-## Kiểm thử tải với JMeter
+```text
+5 tests
+0 failures
+0 errors
+0 skipped
+```
 
-Repo cung cấp 2 kịch bản trong thư mục [Jmeter Script](./Jmeter%20Script/):
+### Full-stack disposable runtime
 
-- `oversell-single-sku.jmx`: nhiều request cùng đặt một SKU để kiểm tra oversell.
-- `multi-sku-concurrent-order.jmx`: nhiều request đồng thời đặt nhiều SKU khác nhau để kiểm tra tải phân tán.
+The final CI rehearsal built **12 production images**, started a **20-service production Compose stack**, passed smoke checks and completed **13/13** named scenarios.
 
-Các file dữ liệu đi kèm:
+Covered scenarios include:
 
-- `data_oversell.csv`: sử dụng một `skuCode` chung cho kịch bản oversell.
-- `data_multi.csv`: chứa nhiều `skuCode` để phân tán tải.
+- idempotent user provisioning retry;
+- USER / ADMIN / owner authorization boundaries;
+- one-default-address invariant;
+- MySQL migration / SKU / revision checks;
+- COD cart cleanup;
+- read-only VNPay Return + signed IPN;
+- cancellation and partial inventory compensation;
+- idempotent admin stock adjustment;
+- Kafka outage + Order restart + outbox recovery;
+- Payment restart + callback retry;
+- Inventory SIGKILL + Streams recovery;
+- Redis AOF restart;
+- duplicate stable event replay;
+- coordinated SQL / Redis / Kafka / Streams backup and isolated restore.
 
-### Chuẩn bị trước khi chạy
+For the exact evidence and CI runs, see [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md).
 
-Bảo đảm:
+---
 
-- Backend API đang chạy và truy cập được.
-- Các service trong checkout flow đã sẵn sàng.
-- User, SKU và inventory test tồn tại.
-- Access token còn hiệu lực.
-- JMeter trỏ đúng host/port và file CSV.
+# Historical Load-Test Evidence
 
-### Cấu hình test plan
+The load-test results below are intentionally retained because they document the original concurrency/overselling objective of the project.
 
-#### 1. API endpoint
+> These are **historical local benchmark results**, not production-capacity claims. They were captured before the later production-hardening batches and should not be interpreted as public-cloud SLO/SLA numbers.
 
-Trong các `HTTP Request`, kiểm tra:
+## Scenario 1 — Single-SKU Oversell
 
-- `Server Name or IP`
-- `Port Number`
+Test SKU: `NIK1-GREEN-39`  
+Initial stock: **100**  
+Recorded benchmark: **1,500 virtual users**
 
-Nếu benchmark thông qua Nginx, sử dụng host tương ứng và cổng `8000`.
+### JMeter test plan
 
-#### 2. CSV Data Set Config
+<img src="screenshots/testplan_oversell.png" alt="JMeter oversell test plan" width="1507">
 
-Trỏ đúng tới:
+### JMeter summary
+
+<img src="screenshots/Oversell_1500.png" alt="JMeter 1500-user oversell summary report" width="1504">
+
+Recorded result:
+
+| Metric | Result |
+|---|---:|
+| add-cart | 1,500 samples |
+| add-cart JMeter error | 0% |
+| add-cart throughput | ~455.0 req/s |
+| checkout | 1,500 samples |
+| checkout JMeter error | ~1.87% |
+| checkout throughput | ~276.2 req/s |
+| total samples | 3,000 |
+| total throughput | ~343.8 req/s |
+| completed orders for the contested SKU | **100** |
+| final stock | **0** |
+| observed negative stock | **none in the saved result** |
+
+### Grafana — cumulative completed metric
+
+<img src="screenshots/result_oversell_1500_success.png" alt="Grafana cumulative completed orders after benchmark runs" width="746">
+
+The screenshot shows `completed = 1100` because the Grafana metric was cumulative across two saved benchmark runs:
+
+```text
+100 completed single-SKU orders
++
+1000 completed multi-SKU orders
+=
+1100 cumulative completed
+```
+
+It must **not** be read as 1,100 successful orders from the single-SKU test.
+
+### Grafana — failed business outcomes
+
+<img src="screenshots/result_oversell_1500_fail.png" alt="Grafana failed orders for the single-SKU oversell benchmark" width="773">
+
+The stored dashboard shows **1,372 failed/rejected business orders** after stock exhaustion. JMeter also recorded roughly 28 request-level errors (~1.87%). Together with the 100 completed orders, these values account for the 1,500 checkout samples in the saved run.
+
+### Inventory after the test
+
+<img src="screenshots/UI_oversell_1500.png" alt="Inventory after single-SKU oversell benchmark" width="1876">
+
+Final stock for `NIK1-GREEN-39` is **0**.
+
+---
+
+## Scenario 2 — Multi-SKU Concurrent Checkout
+
+This scenario distributes requests across multiple SKUs rather than concentrating all contention on one SKU.
+
+### JMeter test plan
+
+<img src="screenshots/test_plan_multi.png" alt="JMeter multi-SKU concurrent checkout test plan" width="1515">
+
+### JMeter summary
+
+<img src="screenshots/multi_1000.png" alt="JMeter 1000-request multi-SKU summary report" width="1513">
+
+Saved benchmark result:
+
+| Metric | Result |
+|---|---:|
+| checkout samples | **1,000** |
+| JMeter error | **0%** |
+| average response time | ~1,964 ms |
+| throughput | ~318.5 req/s |
+
+### Grafana
+
+<img src="screenshots/grafana_multi.png" alt="Grafana dashboard for multi-SKU concurrent checkout" width="791">
+
+### Re-running JMeter
+
+Test plans are stored in [Jmeter Script](./Jmeter%20Script/):
+
+- `oversell-single-sku.jmx`
+- `multi-sku-concurrent-order.jmx`
+
+Related CSV data:
 
 - `data_oversell.csv`
 - `data_multi.csv`
 
-Nếu `.jmx` đang chứa absolute path từ máy chạy benchmark trước đó, cần cập nhật lại đường dẫn.
+When changing virtual-user count, update both the Thread Group and `Synchronizing Timer`. Also refresh the access token, CSV path and target host/port before running.
 
-#### 3. Access token
+---
 
-Trong `HTTP Header Manager`:
+## Security Notes
 
-```text
-Authorization: Bearer <access_token>
-```
+- Never commit real VNPay, Cloudinary, Keycloak or database secrets.
+- Production secrets are expected through environment/secret management.
+- Seed/demo credentials are local-only and should not be reused publicly.
+- Production management/data networks are intended to remain private.
+- Do not expose Actuator/management endpoints through the public edge.
+- A dependency metadata review exists in [docs/dependency-review-batch6.md](docs/dependency-review-batch6.md). Metadata matches are not automatically proven exploitability.
+- Container/OS vulnerability scanning and complete backend advisory reachability/patch triage remain explicit pre-public-release work.
+- Any secret that has previously been exposed should be rotated before public deployment.
 
-Token có thời hạn; khi hết hạn cần đăng nhập lại và cập nhật token trong test plan.
+---
 
-#### 4. Thread count và Synchronizing Timer
+## Known Boundaries
 
-Khi thay đổi số lượng virtual users, cần cập nhật cả:
+The current project intentionally does **not** claim:
 
-- `ThreadGroup.num_threads`
-- `Synchronizing Timer`
+- public production deployment;
+- real-money VNPay settlement;
+- production VNPay merchant approval;
+- multi-node Kafka/MySQL HA;
+- safe arbitrary multi-replica Inventory/Notification scale-out;
+- measured cloud capacity/SLA;
+- full container/OS vulnerability clearance;
+- automated financial refund accounting for ambiguous payments.
 
-để contention được tạo đúng với mục tiêu benchmark.
+It **does** demonstrate a production-oriented microservice codebase with tested correctness, idempotency, recovery, observability, migrations, backup/restore and failure handling.
 
-> Screenshot benchmark của kịch bản oversell bên dưới được lưu từ một lần chạy **1,500 virtual users**. Test plan `.jmx` là cấu hình có thể điều chỉnh và thread count hiện tại có thể khác với lần benchmark đã chụp.
+---
 
-## Cách lấy access token
+## Documentation
 
-Hệ thống sử dụng JWT access token cho các request cần xác thực.
+| Document | Purpose |
+|---|---|
+| [PROJECT1_BATCH4_5_6_FINAL_REPORT.md](PROJECT1_BATCH4_5_6_FINAL_REPORT.md) | Final hardening and validation evidence |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Production deployment/runbook |
+| [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md) | Release checklist |
+| [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | Backup/restore procedure |
+| [docs/batch4-correctness.md](docs/batch4-correctness.md) | Core correctness hardening |
+| [docs/batch5-consistency.md](docs/batch5-consistency.md) | API/data/client consistency |
+| [docs/batch6-validation.md](docs/batch6-validation.md) | Resilience/recovery validation |
+| [docs/dependency-review-batch6.md](docs/dependency-review-batch6.md) | Dependency advisory metadata review |
+| [docs/local-startup-audit.md](docs/local-startup-audit.md) | Local startup guide |
 
-### Tài khoản local/demo
+---
 
-**Keycloak Admin Console**
+## Author
 
-- Username: `admin`
-- Password: `admin`
+**Nguyễn Lâm Trường**
 
-**Application admin**
-
-- Username: `admin`
-- Password: `admin123456@` (do `UserSeeder` tạo khi chưa có tài khoản; tài khoản đã có giữ mật khẩu hiện tại)
-
-> Các credential trên chỉ dành cho môi trường local/demo. Không sử dụng chúng cho môi trường public hoặc production.
-
-### Lấy token bằng `curl`
-
-```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "admin",
-    "password": "admin123456@"
-  }'
-```
-
-### Lấy token bằng Postman
-
-```http
-POST http://localhost:8000/auth/login
-Content-Type: application/json
-```
-
-Body:
-
-```json
-{
-  "username": "admin",
-  "password": "admin123456@"
-}
-```
-
-Copy `access_token` từ response và cập nhật vào `HTTP Header Manager` trong JMeter.
-
-## Lưu ý khi benchmark
-
-- Sử dụng nhất quán cùng một gateway endpoint trong toàn bộ test plan.
-- Không trộn `localhost` và một IP khác nhau trong cùng một run.
-- Nếu chạy backend trong WSL2, có thể kiểm tra IP bằng:
-
-```bash
-wsl ip -4 addr show eth0
-```
-
-- Kiểm tra SKU, inventory và token trước khi bắt đầu benchmark.
-- Không reset hoặc thay đổi dữ liệu giữa chừng nếu muốn so sánh các request trong cùng một run.
-- Nếu muốn các dashboard Grafana chỉ phản ánh một kịch bản duy nhất, cần reset/restart metrics hoặc chọn đúng time range trước khi chụp kết quả.
-
-## Kết quả kiểm thử tải sau khi mở rộng lên 2 API Gateway instances
-
-### Kịch bản 1: Single-SKU oversell
-
-SKU kiểm thử: `NIK1-GREEN-39`  
-Tồn kho ban đầu: **100**  
-Benchmark screenshot: **1,500 virtual users**
-
-#### JMeter Test Plan
-
-<img src="screenshots/testplan_oversell.png" alt="JMeter oversell test plan" width="1507">
-
-#### JMeter Summary Report
-
-<img src="screenshots/Oversell_1500.png" alt="JMeter 1500-user oversell summary report" width="1504">
-
-Trong lần benchmark được lưu:
-
-- `add-cart`: 1,500 samples, 0% JMeter error, throughput khoảng 455.0 req/s.
-- `checkout`: 1,500 samples, 1.87% JMeter error, throughput khoảng 276.2 req/s.
-- Tổng: 3,000 samples, throughput khoảng 343.8 req/s.
-
-#### Grafana — trạng thái completed
-
-<img src="screenshots/result_oversell_1500_success.png" alt="Grafana cumulative completed orders after benchmark runs" width="746">
-
-> **Lưu ý về số `completed = 1100` trong ảnh:** dashboard Grafana sử dụng metric dạng tích lũy và chưa được reset giữa hai benchmark. Con số **1,100 = 100 đơn hoàn tất của kịch bản single-SKU oversell + 1,000 đơn hoàn tất của kịch bản multi-SKU**. Vì vậy không nên đọc 1,100 là số đơn thành công của riêng kịch bản 1.
-
-#### Grafana — trạng thái failed
-
-<img src="screenshots/result_oversell_1500_fail.png" alt="Grafana failed orders for the single-SKU oversell benchmark" width="773">
-
-Ảnh lưu `failed = 1372`. Kết hợp với JMeter Summary Report, 1,500 checkout samples có khoảng 28 request-level errors (1.87%); trong số request đi vào business flow, **100 đơn hoàn tất** và **1,372 đơn bị từ chối/thất bại khi tồn kho đã hết**.
-
-#### Tồn kho sau benchmark
-
-<img src="screenshots/UI_oversell_1500.png" alt="Inventory after single-SKU oversell benchmark" width="1876">
-
-SKU `NIK1-GREEN-39` có tồn kho cuối bằng **0**, không xuất hiện tồn kho âm trong kết quả được lưu.
-
-### Kịch bản 2: Multi-SKU concurrent checkout
-
-Kịch bản này phân tán request trên nhiều SKU nhằm kiểm tra tải concurrent mà không tập trung toàn bộ contention vào một SKU duy nhất.
-
-#### JMeter Test Plan
-
-<img src="screenshots/test_plan_multi.png" alt="JMeter multi-SKU concurrent checkout test plan" width="1515">
-
-#### JMeter Summary Report
-
-<img src="screenshots/multi_1000.png" alt="JMeter 1000-request multi-SKU summary report" width="1513">
-
-Lần benchmark được lưu ghi nhận:
-
-- 1,000 checkout samples.
-- 0% JMeter error.
-- Average response time khoảng 1,964 ms.
-- Throughput khoảng 318.5 req/s.
-
-#### Grafana dashboard
-
-<img src="screenshots/grafana_multi.png" alt="Grafana dashboard for multi-SKU concurrent checkout" width="791">
-
-## Cổng mặc định
-
-- API Gateway (primary): `8080`
-- API Gateway (second benchmark instance): `8090`
-- Nginx: `8000`
-- Eureka: `8761`
-- Inventory: `8082`
-- Product: `8083`
-- Cart: `8084`
-- Keycloak: `8085`
-- Order: `8086`
-- Notification: `8087`
-- User: `8088`
-- Payment: `8089`
-
-## Hạn chế hiện tại
-
-- Project tập trung vào load testing, overselling prevention và consistency hơn là hoàn thiện toàn bộ nghiệp vụ ecommerce production-ready.
-- Benchmark được thực hiện trên môi trường local/dev nên kết quả không đại diện cho production capacity.
-- Một số integration như VNPay và Cloudinary phụ thuộc external configuration.
-- Metrics Grafana trong các screenshot cũ có thể mang tính tích lũy nếu Prometheus/Grafana không được reset giữa các run.
-- Thread count trong file `.jmx` có thể được điều chỉnh sau benchmark; screenshot là bằng chứng của lần chạy được lưu tại thời điểm chụp.
-
-## Tác giả
-
-- **Tên:** Nguyễn Lâm Trường
-- **Email:** lamtruongnguyen2004@gmail.com
-- **GitHub:** [https://github.com/truongnguyen3006](https://github.com/truongnguyen3006)
+- GitHub: [truongnguyen3006](https://github.com/truongnguyen3006)
+- Frontend: [ecommerce-frontend-1-](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
