@@ -110,7 +110,13 @@ public class CartService {
     private List<String> keys(String userId) { return List.of("cart:qty:" + userId, "cart:data:" + userId, "cart:checkout:" + userId, "cart:revision:" + userId); }
 
     public CartEntity viewCart(String userId) {
-        String snapshot = strings.execute(SNAPSHOT, keys(userId), UUID.randomUUID().toString());
+        String snapshot;
+        try {
+            snapshot = strings.execute(SNAPSHOT, keys(userId), UUID.randomUUID().toString());
+        } catch (org.springframework.dao.QueryTimeoutException | org.springframework.data.redis.RedisConnectionFailureException ex) {
+            throw new com.myexampleproject.common.exception.DomainException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "CART_STORE_UNAVAILABLE", "Cart store unavailable");
+        }
         if (snapshot == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cart store unavailable");
         List<CartItemEntity> items = new ArrayList<>();
         try {

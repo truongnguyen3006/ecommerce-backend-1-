@@ -324,10 +324,13 @@ try:
     user_token = login(user);admin_token = login(admin)
     stock(sku_a,12);stock(sku_b,6)
     request('POST','/api/inventory/adjust',adjustment,admin_token,op,(200,202));stock(sku_a,12)
+    cart_before_restart = request('GET','/api/cart/me',token=user_token)[1]
+    assert len(cart_before_restart['items']) == 2
     compose('restart','redis');healthy('redis','cart-service')
     user_token = login(user);admin_token = login(admin)
-    preserved_cart = request('GET','/api/cart/me',token=user_token)[1]
-    assert len(preserved_cart['items']) == 2
+    preserved_cart = await_value('Redis AOF cart and client reconnection',
+                                 lambda:request('GET','/api/cart/me',token=user_token)[1],
+                                 lambda cart:cart == cart_before_restart)
     passed('active payment restart/callback retry, inventory SIGKILL/RocksDB recovery and Redis AOF restart')
     # Replay only this fresh fixture's original stable INIT and CHECK outbox identities.
     sql('product-service',"UPDATE outbox_event SET publication_state='PENDING',next_attempt_at=UTC_TIMESTAMP(6) WHERE topic='product-created-topic' AND aggregate_key IN ('"+sku_a+"','"+sku_b+"')")

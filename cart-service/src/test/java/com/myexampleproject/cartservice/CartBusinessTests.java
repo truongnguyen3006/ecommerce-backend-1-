@@ -46,4 +46,23 @@ class CartBusinessTests {
         assertThatThrownBy(() -> service.checkoutAsync("A")).isInstanceOfSatisfying(org.springframework.web.server.ResponseStatusException.class,ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
         verifyNoInteractions(kafka);
     }
+    @Test void transientRedisReadFailuresAreUnavailableAndNeverReachBusinessWork() {
+        for (var failure : java.util.List.of(new org.springframework.dao.QueryTimeoutException("fixture-private-details"),
+                new org.springframework.data.redis.RedisConnectionFailureException("fixture-private-details"))) {
+            doThrow(failure).when(strings).execute(any(RedisScript.class),anyList(),any(Object[].class));
+            assertThatThrownBy(() -> service.viewCart("A"))
+                .isInstanceOfSatisfying(com.myexampleproject.common.exception.DomainException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(503);
+                    assertThat(ex.getCode()).isEqualTo("CART_STORE_UNAVAILABLE");
+                    assertThat(ex.getReason()).doesNotContain("fixture-private-details");
+                });
+        }
+        verifyNoInteractions(catalog,stock,kafka);
+    }
+    @Test void unexpectedRedisFailureIsNotMisclassifiedAsTransient() {
+        var failure = new org.springframework.data.redis.RedisSystemException("fixture WRONGTYPE",null);
+        when(strings.execute(any(RedisScript.class),anyList(),any(Object[].class))).thenThrow(failure);
+        assertThatThrownBy(() -> service.viewCart("A")).isSameAs(failure);
+        verifyNoInteractions(catalog,stock,kafka);
+    }
 }

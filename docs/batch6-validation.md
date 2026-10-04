@@ -4,7 +4,7 @@ This work continues the already pushed Batch 4 and Batch 5 checkpoints. All chan
 
 ## Source gate
 
-Java 24.0.2+12, Maven 3.9.9: `mvn -B -ntp -Dlogging.level.root=ERROR -Dspring.main.banner-mode=off clean verify` passed all 12 reactor modules and **148 tests, zero failures/errors/skips**. The exact current source was copied into an isolated temporary directory because workspace synchronization had introduced a generated `.rsync-tmp` class directory in an earlier build. No assertion or test discovery exclusion was weakened.
+Java 24.0.2+12, Maven 3.9.9: `mvn -B -ntp -Dlogging.level.root=ERROR -Dspring.main.banner-mode=off clean verify` passed all 12 reactor modules and **150 tests, zero failures/errors/skips**. The exact current source was copied into an isolated temporary directory because workspace synchronization had introduced a generated `.rsync-tmp` class directory in an earlier build. No assertion or test discovery exclusion was weakened.
 
 Frontend `npm ci`, lint and build passed; **79 tests passed** (20 unit, 54 desktop/mobile flow, 5 responsive), using Chrome Headless Shell 154.0.8037.92 with one worker.
 
@@ -16,7 +16,7 @@ Use Java 24 and Maven on PATH, download the official Keycloak 26.8.0 release arc
 python3 .github/scripts/run-keycloak-lifecycle.py /path/to/keycloak-26.8.0.tar.gz
 ```
 
-The launcher verifies the official archive SHA256, owns a new loopback process/realm and generates all credentials. It never connects to an existing realm. Five explicit `KeycloakLifecycleIT` tests passed against the actual provider, including SQL failure after Keycloak creation, retry with the same managed origin, disabled account classification and partial profile updates. These opt-in `*IT` tests are recorded separately from the default 148-test suite.
+The launcher verifies the official archive SHA256, owns a new loopback process/realm and generates all credentials. It never connects to an existing realm. Five explicit `KeycloakLifecycleIT` tests passed against the actual provider, including SQL failure after Keycloak creation, retry with the same managed origin, disabled account classification and partial profile updates. These opt-in `*IT` tests are recorded separately from the default 150-test suite.
 
 Runtime testing found two narrow defects: Keycloak 26.8.0 rejects `unmanagedAttributePolicy: DISABLED` (disabled is represented by omission); its Admin PUT can erase omitted managed core profile fields. The template now omits that invalid enum and profile updates retain existing core fields and the admin-only provisioning marker. A serialization test also found the default-address response needed an explicit getter property name to emit only `isDefault`.
 
@@ -38,7 +38,9 @@ The routing-correction run passed the first nine business checks, including COD,
 
 The next attempt passed the Payment restart callback and Inventory SIGKILL/quantity/operation-ID assertions, then Redis restart entered an exit-1 loop before AOF/cart comparisons. The Redis launcher previously reopened a fixed file in sticky `/tmp` after transferring ownership to Redis. It now creates a fresh private 0600 configuration with `mktemp` for each start, retaining the same authentication, AOF and non-evicting policy. Failure diagnostics now include Redis logs. The native workspace cannot reproduce the Docker ownership/kernel setup; the actual restart/conservation gate supplies the final proof.
 
-The disposable MySQL probe also executes the exact DLT SQL read from `WorkflowDeadLetters.java` against the real migration's table, checks immutable duplicate evidence and verifies constraint errors propagate. Its result is recorded separately from a real poisoned-Kafka-record/operator rehearsal.
+The disposable MySQL probe also executes the exact DLT SQL read from `WorkflowDeadLetters.java` against the real migration's table, checks immutable duplicate evidence and verifies constraint errors propagate. These actual MySQL checks passed without changing the DLT implementation. The result is narrower than a real poisoned-Kafka-record/operator rehearsal.
+
+Redis then restarted successfully and loaded its AOF, but Cart's first read hit a client `QueryTimeoutException` during reconnect and returned 500. Only the Cart snapshot-read boundary now classifies Redis connection/timeouts as `503 CART_STORE_UNAVAILABLE`, without leaking connection details or replaying mutations. Two regressions cover those transient cases and retain unexpected Redis errors as genuine errors. The probe snapshots the whole owner/cart/quantity/revision response before Redis restart, then bounds benign read retries and requires exact equality after reconnect; it does not reduce the conservation assertion to an item count.
 
 The script records a check only after its assertions pass. Its presence alone is not runtime evidence. Consult the final report for the actual CI run, completed checks, failures and any unverified scenarios.
 
