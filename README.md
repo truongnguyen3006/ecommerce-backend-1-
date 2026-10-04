@@ -1,240 +1,108 @@
 # Project 1 — Ecommerce Microservices Backend
 
-Backend cho hệ thống **Ecommerce Microservices** xây dựng bằng Java/Spring Boot, tập trung vào:
+Backend cho hệ thống ecommerce theo kiến trúc microservices, xây dựng bằng **Java 24 + Spring Boot 3.5.7**.
 
-- xử lý checkout đồng thời và chống overselling;
-- đảm bảo tính nhất quán giữa Order, Inventory và Payment;
-- giao tiếp bất đồng bộ qua Kafka/Kafka Streams;
+Mục tiêu chính:
+
+- checkout đồng thời và chống overselling;
+- đảm bảo consistency giữa Order, Inventory và Payment;
+- xử lý bất đồng bộ bằng Kafka/Kafka Streams;
 - xác thực/phân quyền bằng Keycloak;
-- khả năng retry, idempotency, recovery và backup/restore;
-- tích hợp VNPay Sandbox và Cloudinary;
-- cấu hình theo hướng production.
+- retry, idempotency, recovery và transactional outbox;
+- tích hợp VNPay Sandbox, Cloudinary và observability.
 
-> **Trạng thái hiện tại:** source/configuration đã được harden theo hướng production và đã qua full-stack validation trên môi trường disposable. Project chưa được deploy public production.
+> Source/configuration đã được harden theo hướng production và kiểm thử full-stack. Project chưa được deploy public production.
 
-- **Backend:** [ecommerce-backend-1-](https://github.com/truongnguyen3006/ecommerce-backend-1-)
-- **Frontend:** [ecommerce-frontend-1-](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
+- [Frontend repository](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
 
 ---
 
-## Điểm nổi bật
+## Kiến trúc & công nghệ
 
-- Microservices với **API Gateway + Eureka**.
-- **MySQL + Flyway** cho dữ liệu nghiệp vụ và migration.
-- **Redis** cho cart/state.
-- **Kafka + Kafka Streams** cho flow bất đồng bộ và inventory.
-- **Transactional Outbox** cho Order, Product và Payment.
-- Idempotency cho checkout, callback payment và điều chỉnh kho.
-- Chống stale update bằng revision khi sửa Product.
-- Permanent SKU identity để tránh tái sử dụng SKU cũ sai ngữ cảnh.
-- Cart cleanup có kiểm tra quantity/revision để tránh xóa nhầm dữ liệu mới.
-- Keycloak + JWT cho USER/ADMIN và ownership.
-- VNPay Return/IPN tách riêng vai trò.
-- Cloudinary upload ảnh sản phẩm.
-- Prometheus, Grafana và Zipkin cho observability.
-- Docker Compose, CI, backup/restore và production profiles.
-
----
-
-## Kiến trúc
-
-```mermaid
-flowchart LR
-    CLIENT[Frontend] --> GW[API Gateway]
-
-    GW --> USER[User Service]
-    GW --> PRODUCT[Product Service]
-    GW --> CART[Cart Service]
-    GW --> ORDER[Order Service]
-    GW --> INVENTORY[Inventory Service]
-    GW --> PAYMENT[Payment Service]
-    GW --> NOTI[Notification Service]
-
-    USER --> KEYCLOAK[Keycloak]
-    CART --> REDIS[(Redis)]
-
-    PRODUCT --> MYSQL[(MySQL)]
-    USER --> MYSQL
-    ORDER --> MYSQL
-    PAYMENT --> MYSQL
-
-    PRODUCT --> KAFKA[Kafka]
-    ORDER --> KAFKA
-    PAYMENT --> KAFKA
-    INVENTORY --> KAFKA
-    NOTI --> KAFKA
-
-    INVENTORY --> STREAMS[Kafka Streams]
-    PRODUCT --> CLOUDINARY[Cloudinary]
-    PAYMENT --> VNPAY[VNPay Sandbox]
-```
-
-### Các service
+Các service chính:
 
 | Service | Chức năng | Port |
 |---|---|---:|
-| `api-gateway` | Gateway, routing, security | 8080 |
-| `discovery-server` | Eureka Service Discovery | 8761 |
-| `inventory-service` | Quản lý tồn kho, Kafka Streams | 8082 |
-| `product-service` | Product, variant, SKU, Cloudinary | 8083 |
-| `cart-service` | Giỏ hàng trên Redis | 8084 |
-| `order-service` | Order orchestration, saga, outbox | 8086 |
-| `notification-service` | Notification / STOMP | 8087 |
-| `user-service` | User, address, Keycloak | 8088 |
-| `payment-service` | VNPay, payment state, IPN/Return | 8089 |
+| API Gateway | Routing / security | 8080 |
+| Discovery Server | Eureka | 8761 |
+| Inventory Service | Stock / Kafka Streams | 8082 |
+| Product Service | Product / SKU / Cloudinary | 8083 |
+| Cart Service | Redis cart | 8084 |
+| Order Service | Order / saga / outbox | 8086 |
+| Notification Service | Notification / STOMP | 8087 |
+| User Service | User / Keycloak | 8088 |
+| Payment Service | VNPay / payment state | 8089 |
 
-Shared modules:
-
-- `common-dto`
-- `common-events`
+**Stack:** Spring Cloud Gateway, Eureka, MySQL, Flyway, Redis, Kafka, Kafka Streams, Keycloak, WebSocket/STOMP, VNPay Sandbox, Cloudinary, Prometheus, Grafana, Zipkin, Docker Compose, Maven và JMeter.
 
 ---
 
-## Công nghệ sử dụng
+## Điểm kỹ thuật chính
 
-| Nhóm | Công nghệ |
-|---|---|
-| Ngôn ngữ | Java 24 |
-| Backend | Spring Boot 3.5.7 |
-| Microservices | Spring Cloud 2025.0.0 |
-| Gateway | Spring Cloud Gateway |
-| Discovery | Eureka |
-| Authentication | Keycloak / OAuth2 / JWT |
-| Database | MySQL |
-| Migration | Flyway |
-| Cache / Cart | Redis |
-| Messaging | Apache Kafka |
-| Stream Processing | Kafka Streams |
-| Schema Registry | JSON Schema |
-| Realtime | WebSocket / STOMP |
-| Payment | VNPay Sandbox |
-| Image Storage | Cloudinary |
-| Monitoring | Prometheus / Grafana / Zipkin |
-| Container | Docker / Docker Compose |
-| Load Test | Apache JMeter |
-| Build | Maven |
+- Transactional Outbox cho Order, Product và Payment.
+- Idempotency cho checkout, payment callback và điều chỉnh tồn kho.
+- Permanent SKU identity để tránh tái sử dụng SKU lịch sử.
+- Revision check khi cập nhật Product.
+- Atomic cart cleanup theo SKU + quantity + revision.
+- Payment fence và reconciliation để tránh trạng thái payment/order/inventory không nhất quán.
+- Production profile, health checks, backup/restore và CI.
 
 ---
 
-## Trạng thái kiểm thử hiện tại
+## Kết quả kiểm thử
 
 | Hạng mục | Kết quả |
 |---|---|
-| Backend | **150 tests / 12 modules / 0 failures / 0 errors / 0 skipped** |
-| Keycloak lifecycle | **5 tests PASS** với Keycloak 26.8.0 |
+| Backend | **150 tests / 12 modules / 0 failures** |
+| Keycloak lifecycle | **5 tests PASS** |
 | Frontend liên kết | **79 tests PASS** |
-| MySQL migration/runtime | MySQL 8.4.10 PASS |
 | Production images | **12 images build PASS** |
-| Disposable production stack | **20 services healthy** |
-| Smoke test | PASS |
-| Restart / replay / backup / restore | **13 / 13 checks PASS** |
-| VNPay Sandbox local | **End-to-end VERIFIED** |
+| Disposable stack | **20 services healthy** |
+| Restart / replay / backup / restore | **13/13 PASS** |
+| VNPay Sandbox | **End-to-end VERIFIED** |
 | Public production deployment | Chưa thực hiện |
-
-Các kết quả trên đã được xác minh qua CI và full-stack validation trên nhánh hiện tại.
 
 ---
 
 ## Chạy local
 
-### Yêu cầu
-
-- JDK 24
-- Maven 3.9+
-- Docker Desktop + Docker Compose
-- Node.js/npm nếu chạy frontend
-- JMeter nếu muốn chạy lại load test
-
-### Clone
-
-Hiện tại:
+Yêu cầu: **JDK 24**, Maven 3.9+, Docker Desktop / Docker Compose.
 
 ```bash
 git clone --branch production-ready-final https://github.com/truongnguyen3006/ecommerce-backend-1-.git
 cd ecommerce-backend-1-
-```
 
-### Build
-
-Chạy project local:
-
-```bash
 mvn clean install -DskipTests
-```
-
-Chạy đầy đủ test:
-
-```bash
-mvn clean verify
-```
-
-### Lưu ý khi chạy test trên Windows
-
-`RedisCartAtomicTests` tự khởi chạy một Redis process riêng và mặc định tìm:
-
-```text
-/usr/bin/redis-server
-```
-
-Do đó trên Windows có thể gặp lỗi:
-
-```text
-Cannot run program "/usr/bin/redis-server"
-```
-
-Có thể chạy test này bằng WSL/Linux hoặc cấu hình:
-
-```powershell
-$env:TEST_REDIS_EXECUTABLE="C:\path\to\redis-server.exe"
-mvn clean verify
-```
-
-### Khởi động hạ tầng
-
-```bash
 docker compose up -d mysql-business redis keycloak-mysql keycloak kafka schema-registry
-docker compose ps
 ```
 
-Không chạy `docker compose down -v` nếu không muốn xóa volume/data local.
+Thứ tự chạy service gợi ý:
 
-### Thứ tự chạy service gợi ý
+```text
+discovery-server
+→ inventory-service
+→ order-service
+→ payment-service
+→ cart-service
+→ notification-service
+→ user-service
+→ product-service
+→ api-gateway
+```
 
-1. `discovery-server`
-2. `inventory-service`
-3. `order-service`
-4. `payment-service`
-5. `cart-service`
-6. `notification-service`
-7. `user-service`
-8. `product-service`
-9. `api-gateway`
-
-Ví dụ:
+Chạy test:
 
 ```bash
-mvn -pl order-service spring-boot:run
+mvn clean verify
 ```
 
-Các biến môi trường local tham khảo nằm trong `.env.example`.
+> Trên Windows, `RedisCartAtomicTests` cần WSL/Linux hoặc cấu hình `TEST_REDIS_EXECUTABLE` vì test mặc định tìm `/usr/bin/redis-server`.
 
 ---
 
-## Cấu hình VNPay Sandbox
+## VNPay Sandbox
 
-Payment Service dùng các biến môi trường:
-
-```text
-VNPAY_TMN_CODE
-VNPAY_SECRET_KEY
-VNPAY_PAY_URL
-VNPAY_RETURN_URL
-VNPAY_IPN_URL
-FRONTEND_BASE_URL
-ORDER_SERVICE_BASE_URL
-```
-
-Flow đã được test local thành công:
+Flow đã test local thành công:
 
 ```text
 Checkout
@@ -246,153 +114,72 @@ Checkout
 → Order COMPLETED
 ```
 
-Lưu ý:
-
-- không commit `VNPAY_SECRET_KEY`;
-- Return URL chỉ dùng cho browser redirect;
-- IPN là callback server-to-server để backend xử lý trạng thái payment;
-- kết quả trên là **VNPay Sandbox**, không phải thanh toán production.
+Không commit `VNPAY_SECRET_KEY` hoặc credential thật vào repository.
 
 ---
 
-## Cấu hình Cloudinary
+## Load Test
 
-Product Service dùng:
+Các benchmark dưới đây là **kết quả local lịch sử**, dùng để kiểm tra concurrent checkout và overselling; không đại diện cho production capacity.
 
-```text
-CLOUDINARY_CLOUD_NAME
-CLOUDINARY_API_KEY
-CLOUDINARY_API_SECRET
-CLOUDINARY_PRODUCT_FOLDER
-```
+### Single-SKU Oversell
 
-Credential chỉ nằm ở backend, không đưa secret vào frontend hoặc repository.
+- SKU: `NIK1-GREEN-39`
+- Tồn kho ban đầu: **100**
+- Tải: **1.500 virtual users**
+- Đơn hoàn tất: **100**
+- Tồn kho cuối: **0**
+- Không ghi nhận tồn kho âm
+- Tổng throughput: **~343,8 req/s**
 
----
+<details>
+<summary>Xem ảnh JMeter / Grafana của Single-SKU</summary>
 
-# Kết quả Load Test
+<img src="screenshots/testplan_oversell.png" alt="JMeter oversell test plan">
 
-Các kết quả bên dưới là **benchmark local lịch sử**, được giữ lại để thể hiện mục tiêu ban đầu của project: kiểm thử concurrent checkout và chống overselling.
+<img src="screenshots/Oversell_1500.png" alt="JMeter oversell summary">
 
-> Các số liệu này không đại diện cho năng lực production/cloud.
+<img src="screenshots/result_oversell_1500_success.png" alt="Grafana completed orders">
 
-## Kịch bản 1 — Single-SKU Oversell
+<img src="screenshots/result_oversell_1500_fail.png" alt="Grafana failed orders">
 
-SKU: `NIK1-GREEN-39`  
-Tồn kho ban đầu: **100**  
-Tải kiểm thử: **1.500 virtual users**
+<img src="screenshots/UI_oversell_1500.png" alt="Inventory after oversell benchmark">
 
-### JMeter Test Plan
+> Grafana hiển thị `completed = 1100` vì metric được cộng dồn từ benchmark single-SKU và multi-SKU.
 
-<img src="screenshots/testplan_oversell.png" alt="JMeter oversell test plan" width="1507">
+</details>
 
-### JMeter Summary
+### Multi-SKU Concurrent Checkout
 
-<img src="screenshots/Oversell_1500.png" alt="JMeter 1500-user oversell summary report" width="1504">
+- **1.000 checkout samples**
+- **0% JMeter error**
+- Response time trung bình: **~1.964 ms**
+- Throughput: **~318,5 req/s**
 
-Kết quả:
+<details>
+<summary>Xem ảnh JMeter / Grafana của Multi-SKU</summary>
 
-| Chỉ số | Kết quả |
-|---|---:|
-| add-cart samples | 1.500 |
-| add-cart error | 0% |
-| add-cart throughput | ~455 req/s |
-| checkout samples | 1.500 |
-| checkout error | ~1,87% |
-| checkout throughput | ~276,2 req/s |
-| tổng throughput | ~343,8 req/s |
-| đơn hoàn tất | **100** |
-| tồn kho cuối | **0** |
-| tồn kho âm | **Không ghi nhận trong kết quả lưu** |
+<img src="screenshots/test_plan_multi.png" alt="JMeter multi-SKU test plan">
 
-### Grafana — Completed
+<img src="screenshots/multi_1000.png" alt="JMeter multi-SKU summary">
 
-<img src="screenshots/result_oversell_1500_success.png" alt="Grafana completed orders" width="746">
+<img src="screenshots/grafana_multi.png" alt="Grafana multi-SKU benchmark">
 
-Ảnh hiển thị `completed = 1100` vì metric được cộng dồn qua hai lần benchmark:
+</details>
 
-```text
-100 đơn single-SKU
-+
-1.000 đơn multi-SKU
-=
-1.100 completed tích lũy
-```
-
-### Grafana — Failed
-
-<img src="screenshots/result_oversell_1500_fail.png" alt="Grafana failed orders" width="773">
-
-Kết quả lưu ghi nhận **1.372 order failed/rejected** sau khi stock hết.
-
-### Inventory sau benchmark
-
-<img src="screenshots/UI_oversell_1500.png" alt="Inventory after oversell benchmark" width="1876">
-
-Tồn kho cuối của `NIK1-GREEN-39` bằng **0**.
+Test plan nằm trong [Jmeter Script](./Jmeter%20Script/).
 
 ---
 
-## Kịch bản 2 — Multi-SKU Concurrent Checkout
-
-### JMeter Test Plan
-
-<img src="screenshots/test_plan_multi.png" alt="JMeter multi-SKU test plan" width="1515">
-
-### JMeter Summary
-
-<img src="screenshots/multi_1000.png" alt="JMeter multi-SKU summary" width="1513">
-
-Kết quả:
-
-| Chỉ số | Kết quả |
-|---|---:|
-| checkout samples | **1.000** |
-| JMeter error | **0%** |
-| response time trung bình | ~1.964 ms |
-| throughput | ~318,5 req/s |
-
-### Grafana
-
-<img src="screenshots/grafana_multi.png" alt="Grafana multi-SKU benchmark" width="791">
-
-Test plan nằm trong thư mục [Jmeter Script](./Jmeter%20Script/).
-
----
-
-## Production-oriented
-
-Project hiện đã có:
-
-- production profile riêng;
-- externalized secrets;
-- Flyway + Hibernate `validate`;
-- Redis persistence;
-- Kafka/Streams persistence;
-- Keycloak production config;
-- health/readiness/liveness;
-- Docker production images;
-- CI workflow;
-- backup/restore scripts;
-- recovery documentation;
-- Prometheus/Grafana/Zipkin.
-
-Project **chưa claim production-ready hoàn toàn** vì chưa có public deployment, domain/TLS production, production VNPay merchant, multi-instance HA và full container vulnerability scan.
-
----
-
-## Tài liệu liên quan
+## Tài liệu
 
 - [DEPLOYMENT.md](DEPLOYMENT.md)
 - [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md)
 - [BACKUP_RESTORE.md](BACKUP_RESTORE.md)
-- [docs/production-recovery.md](docs/production-recovery.md)
+- [Production Recovery](docs/production-recovery.md)
 
 ---
 
 ## Tác giả
 
-**Nguyễn Lâm Trường**
-
-- GitHub: [truongnguyen3006](https://github.com/truongnguyen3006)
-- Frontend: [ecommerce-frontend-1-](https://github.com/truongnguyen3006/ecommerce-frontend-1-)
+**Nguyễn Lâm Trường** — [GitHub](https://github.com/truongnguyen3006)
