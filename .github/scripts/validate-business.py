@@ -55,8 +55,8 @@ def compose(*args, data=None, timeout=180):
 
 def request(method, path, body=None, token=None, key=None, expected=(200,), base=None, form=False):
     url = (base or 'http://api-gateway:8080') + path
-    assert urllib.parse.urlsplit(url).hostname in ('api-gateway', 'keycloak')
-    config = ['silent', 'show-error', 'max-time = 20', 'request = '+json.dumps(method),
+    assert urllib.parse.urlsplit(url).hostname in ('api-gateway', 'keycloak', 'cart-service')
+    config = ['silent', 'show-error', 'include', 'max-time = 20', 'request = '+json.dumps(method),
               'url = '+json.dumps(url), 'write-out = "\\n%{http_code}"']
     if token:
         config.append('header = '+json.dumps('Authorization: Bearer '+token))
@@ -72,12 +72,24 @@ def request(method, path, body=None, token=None, key=None, expected=(200,), base
     output = compose('exec', '-T', 'api-gateway', 'curl', '--config', '-', data='\n'.join(config)+'\n')
     content, code = output.rsplit('\n', 1)
     code = int(code)
-    if expected is not None and code not in expected:
-        raise AssertionError('Fixture HTTP status '+str(code)+' for '+method+' '+path.split('?')[0])
+    headers, separator, content = content.partition('\n\n')
+    assert separator, 'Fixture HTTP response has no header boundary'
     try:
         decoded = json.loads(content) if content else None
     except json.JSONDecodeError:
         decoded = None
+    if expected is not None and code not in expected:
+        error_code = decoded.get('code', '') if isinstance(decoded, dict) else ''
+        error_code = error_code if re.fullmatch('[A-Z0-9_]{1,80}', str(error_code)) else 'NO_CODE'
+        # Only a closed diagnostic enum is logged. Never print headers, body or tokens.
+        authentication = next((line.lower() for line in headers.splitlines()
+                               if line.lower().startswith('www-authenticate:')), '')
+        hint = ('TOKEN_EXPIRED' if 'expired' in authentication else
+                'ISSUER' if 'issuer' in authentication or 'iss claim' in authentication else
+                'JWK_FETCH' if 'jwk' in authentication else
+                'SIGNATURE' if 'signature' in authentication else 'NO_HINT')
+        raise AssertionError('Fixture HTTP status '+str(code)+' code='+error_code+' auth='+hint+
+                             ' for '+method+' '+path.split('?')[0])
     return code, decoded
 
 
@@ -212,6 +224,14 @@ try:
     role = request('GET',realm_path+'/roles/ADMIN',token=service_token,base=kc_base)[1]
     request('POST',realm_path+'/users/'+admin['keycloakId']+'/role-mappings/realm',[role],token=service_token,base=kc_base,expected=(204,))
     admin_token = login(admin)
+    own_cart = request('GET','/api/cart/me',token=user_token,expected=None)
+    if own_cart[0] != 200:
+        direct = request('GET','/api/cart/me',token=user_token,base='http://cart-service:8084',expected=None)
+        direct_code = direct[1].get('code', '') if isinstance(direct[1], dict) else ''
+        direct_code = direct_code if re.fullmatch('[A-Z0-9_]{1,80}', str(direct_code)) else 'NO_CODE'
+        print('Fixture cart diagnostic: gateway='+str(own_cart[0])+' direct='+str(direct[0])+
+              ' direct_code='+direct_code, flush=True)
+    request('GET','/api/cart/me',token=user_token)
     request('GET','/api/order/admin',token=user_token,expected=(403,))
     request('GET','/api/order/admin',token=admin_token)
     request('GET','/api/inventory/operations/fixture-unclaimed',token=user_token,expected=(403,))
