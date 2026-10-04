@@ -38,8 +38,10 @@ class KeycloakLifecycleIT {
  @Test void registerLoginRefreshLogoutAndInvalidRefreshPreserveExactIdentityAndUserRole() throws Exception {
   var request=request();String key=UUID.randomUUID().toString();var user=register(request,key);
   assertThat(provider.getKeycloakIdByUsername(request.getUsername())).isEqualTo(user.getKeycloakId());
-  var token=login(request);assertThat(claims(token).path("realm_access").path("roles").toString()).contains("USER").doesNotContain("ADMIN");
+  var token=login(request);assertThat(claims(token).path("sub").asText()).isEqualTo(user.getKeycloakId());
+  assertThat(claims(token).path("realm_access").path("roles").toString()).contains("USER").doesNotContain("ADMIN");
   var refreshed=(JsonNode)auth.refreshToken(new TokenRefreshRequest(token.path("refresh_token").asText())).getBody();assertThat(refreshed.path("access_token").asText()).isNotBlank();
+  assertThat(claims(refreshed).path("sub").asText()).isEqualTo(user.getKeycloakId());
   auth.logout(refreshed.path("refresh_token").asText());
   assertThatThrownBy(() -> auth.refreshToken(new TokenRefreshRequest(refreshed.path("refresh_token").asText()))).isInstanceOfSatisfying(DomainException.class,e -> assertThat(e.getCode()).isEqualTo("INVALID_REFRESH_TOKEN"));
   assertThat(service.createUser(request,key).getId()).isEqualTo(user.getId());
@@ -50,7 +52,8 @@ class KeycloakLifecycleIT {
  }
  @Test void exactFixtureAdminGrantIsVisibleAndDuplicateUsernameCannotProvisionAgain() throws Exception {
   var request=request();var user=register(request,UUID.randomUUID().toString());provider.assignRealmRoleToUser(user.getKeycloakId(),"ADMIN");
-  assertThat(claims(login(request)).path("realm_access").path("roles").toString()).contains("ADMIN");
+  var token=claims(login(request));assertThat(token.path("sub").asText()).isEqualTo(user.getKeycloakId());
+  assertThat(token.path("realm_access").path("roles").toString()).contains("ADMIN");
   assertThat(provider.getKeycloakIdByUsername(request.getUsername()+"2")).isNull();
   assertThatThrownBy(() -> service.createUser(request,UUID.randomUUID().toString())).isInstanceOfSatisfying(DomainException.class,e -> assertThat(e.getCode()).isEqualTo("USER_ALREADY_EXISTS"));
  }

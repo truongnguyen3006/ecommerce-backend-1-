@@ -5,6 +5,7 @@ All credentials are generated fixture data. No provider URL is contacted. SQL
 dumps, tokens and volume archives remain in RUNNER_TEMP and are never artifacts.
 Assertions fail closed; the report lists only checks which actually completed.
 """
+import base64
 import hashlib
 import hmac
 import importlib.util
@@ -120,7 +121,11 @@ def sql(database, statement):
 
 
 def login(account):
-    return request('POST','/auth/login',{'username':account['username'],'password':account['password']})[1]['access_token']
+    token = request('POST','/auth/login',{'username':account['username'],'password':account['password']})[1]['access_token']
+    payload = token.split('.')[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload+'='*(-len(payload)%4)))
+    assert claims.get('sub') == account['keycloakId'], 'Fixture token must retain the exact registered owner'
+    return token
 
 
 def stock(sku, quantity):

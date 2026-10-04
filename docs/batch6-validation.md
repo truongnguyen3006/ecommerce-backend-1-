@@ -4,7 +4,7 @@ This work continues the already pushed Batch 4 and Batch 5 checkpoints. All chan
 
 ## Source gate
 
-Java 24.0.2+12, Maven 3.9.9: `mvn -B -ntp -Dlogging.level.root=ERROR -Dspring.main.banner-mode=off clean verify` passed all 12 reactor modules and **147 tests, zero failures/errors/skips**. The exact current source was copied into an isolated temporary directory because workspace synchronization had introduced a generated `.rsync-tmp` class directory in an earlier build. No assertion or test discovery exclusion was weakened.
+Java 24.0.2+12, Maven 3.9.9: `mvn -B -ntp -Dlogging.level.root=ERROR -Dspring.main.banner-mode=off clean verify` passed all 12 reactor modules and **148 tests, zero failures/errors/skips**. The exact current source was copied into an isolated temporary directory because workspace synchronization had introduced a generated `.rsync-tmp` class directory in an earlier build. No assertion or test discovery exclusion was weakened.
 
 Frontend `npm ci`, lint and build passed; **79 tests passed** (20 unit, 54 desktop/mobile flow, 5 responsive), using Chrome Headless Shell 154.0.8037.92 with one worker.
 
@@ -16,11 +16,13 @@ Use Java 24 and Maven on PATH, download the official Keycloak 26.8.0 release arc
 python3 .github/scripts/run-keycloak-lifecycle.py /path/to/keycloak-26.8.0.tar.gz
 ```
 
-The launcher verifies the official archive SHA256, owns a new loopback process/realm and generates all credentials. It never connects to an existing realm. Five explicit `KeycloakLifecycleIT` tests passed against the actual provider, including SQL failure after Keycloak creation, retry with the same managed origin, disabled account classification and partial profile updates. These opt-in `*IT` tests are recorded separately from the default 147-test suite.
+The launcher verifies the official archive SHA256, owns a new loopback process/realm and generates all credentials. It never connects to an existing realm. Five explicit `KeycloakLifecycleIT` tests passed against the actual provider, including SQL failure after Keycloak creation, retry with the same managed origin, disabled account classification and partial profile updates. These opt-in `*IT` tests are recorded separately from the default 148-test suite.
 
 Runtime testing found two narrow defects: Keycloak 26.8.0 rejects `unmanagedAttributePolicy: DISABLED` (disabled is represented by omission); its Admin PUT can erase omitted managed core profile fields. The template now omits that invalid enum and profile updates retain existing core fields and the admin-only provisioning marker. A serialization test also found the default-address response needed an explicit getter property name to emit only `isDefault`.
 
 The first Batch 6 Docker startup also exposed MySQL incompatibility in the new, unreleased SKU V4 migration: DATETIME(6) requires CURRENT_TIMESTAMP(6), and MySQL prohibits reading the INSERT target in a subquery. V4 now uses matching precision and a top-level anti-join. This migration was introduced by this task, has not been deployed to an owner environment, and was applied only to disposable fixtures. All 15 migration files from the starting checkpoint remain byte-identical; no existing database history/checksum is repaired. A disposable MySQL 8.4.10 SQL/backfill probe checks the new migration before image builds, followed by the actual Flyway/Hibernate production startup gate.
+
+The completed 20-container smoke then exposed a missing owner claim: both Gateway and direct Cart returned 401 BUSINESS_ERROR for a valid USER token. The native provider regression confirmed an empty access-token `sub` for USER/ADMIN because the template omitted modern Keycloak’s `basic` default scope. The template now retains that scope; native tests assert the exact registered owner after login/refresh/ADMIN grant. The signed HTTP Cart fixture independently checks valid owner 200, foreign owner 403, anonymous/missing-sub/wrong-issuer 401 with the production management chain active. Authentication and ownership guards were not relaxed.
 
 ## Disposable Docker rehearsal
 

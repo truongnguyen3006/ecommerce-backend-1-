@@ -41,6 +41,7 @@
       ],
       "fullScopeAllowed": false,
       "defaultClientScopes": [
+        "basic",
         "roles",
         "profile",
         "email"
