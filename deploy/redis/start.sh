@@ -3,7 +3,9 @@ set -eu
 case "$REDIS_PASSWORD" in ''|*[!a-fA-F0-9]*) echo 'Redis requires a generated hex credential' >&2; exit 2;; esac
 [ "${#REDIS_PASSWORD}" -eq 64 ] || exit 2
 umask 077
-cat > /tmp/redis-production.conf <<CONFIG
+# A restart must not reopen the previous redis-owned file in sticky /tmp.
+redis_config=$(mktemp /tmp/redis-production.XXXXXX)
+cat > "$redis_config" <<CONFIG
 bind 0.0.0.0
 protected-mode yes
 port 6379
@@ -16,5 +18,5 @@ save 300 10
 save 60 10000
 maxmemory-policy noeviction
 CONFIG
-chown redis:redis /tmp/redis-production.conf
-exec /usr/local/bin/docker-entrypoint.sh redis-server /tmp/redis-production.conf
+chown redis:redis "$redis_config"
+exec /usr/local/bin/docker-entrypoint.sh redis-server "$redis_config"

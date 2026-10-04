@@ -36,6 +36,10 @@ The restore stops writers and consumers, uses the documented business/Keycloak S
 
 The routing-correction run passed the first nine business checks, including COD, signed mock payment, compensation, admin retry and Kafka outage/Order restart. Its next callback hit a temporary Gateway 503 immediately after Payment container readiness; the Gateway explicitly reported no registered Payment server before discovery converged. The probe now polls the authenticated, read-only payment view for the retained PENDING reference after restart (and SUCCESS references after restore) before sending callbacks. The bounded wait does not retry an ambiguous first financial callback or weaken the required 00/02 acknowledgements.
 
+The next attempt passed the Payment restart callback and Inventory SIGKILL/quantity/operation-ID assertions, then Redis restart entered an exit-1 loop before AOF/cart comparisons. The Redis launcher previously reopened a fixed file in sticky `/tmp` after transferring ownership to Redis. It now creates a fresh private 0600 configuration with `mktemp` for each start, retaining the same authentication, AOF and non-evicting policy. Failure diagnostics now include Redis logs. The native workspace cannot reproduce the Docker ownership/kernel setup; the actual restart/conservation gate supplies the final proof.
+
+The disposable MySQL probe also executes the exact DLT SQL read from `WorkflowDeadLetters.java` against the real migration's table, checks immutable duplicate evidence and verifies constraint errors propagate. Its result is recorded separately from a real poisoned-Kafka-record/operator rehearsal.
+
 The script records a check only after its assertions pass. Its presence alone is not runtime evidence. Consult the final report for the actual CI run, completed checks, failures and any unverified scenarios.
 
 ## Security

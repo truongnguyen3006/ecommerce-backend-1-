@@ -51,5 +51,28 @@ with tempfile.TemporaryDirectory(prefix='project1-sku-fixture-') as temp:
         assert sql('USE fixture; INSERT INTO sku_identity(sku_code) VALUES (\'LIVE\');',required=False).returncode != 0
         assert sql('USE fixture; UPDATE product SET revision=-1;',required=False).returncode != 0
         print('MySQL 8.4.10: new SKU migration/backfill/default precision/unique identity/nonnegative revision passed.')
+        # Exercise the actual production DLT statement, not an H2-only SQL approximation.
+        migration = (root/'order-service/src/main/resources/db/migration/V5__durable_saga_recovery.sql').read_text()
+        sql('USE fixture;\n'+migration[migration.index('CREATE TABLE workflow_dead_letter'):])
+        source = (root/'order-service/src/main/java/com/myexampleproject/orderservice/service/WorkflowDeadLetters.java').read_text()
+        statement = re.search(r'jdbc\.update\("([^"]+)"', source).group(1)
+        assert statement.count('?') in (4, 7)
+        def record(offset, order, topic='fixture.DLT', required=True):
+            arguments = [topic, 0, offset, order]
+            if statement.count('?') == 7:
+                arguments += [topic, 0, offset]
+            def literal(value):
+                return 'NULL' if value is None else ("'"+value.replace("'", "''")+"'" if isinstance(value,str) else str(value))
+            literals = iter(map(literal, arguments))
+            return sql('USE fixture; '+re.sub(r'\?',lambda _:next(literals),statement)+';',required)
+        record(1,'fixture-order')
+        original = sql('USE fixture; SELECT * FROM workflow_dead_letter;').stdout
+        record(1,'different-fixture-order')
+        assert sql('USE fixture; SELECT * FROM workflow_dead_letter;').stdout == original
+        record(2,None)
+        assert sql('USE fixture; SELECT COUNT(*) FROM workflow_dead_letter;').stdout.strip() == '2'
+        assert record(3,None,topic=None,required=False).returncode != 0
+        assert sql('USE fixture; SELECT COUNT(*) FROM workflow_dead_letter;').stdout.strip() == '2'
+        print('MySQL 8.4.10: actual DLT SQL stores stable evidence, preserves duplicates and propagates constraint failures.')
     finally:
         execute(['docker','rm','--force','--volumes',name],required=False)
